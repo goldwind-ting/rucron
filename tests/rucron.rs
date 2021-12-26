@@ -87,7 +87,10 @@ struct RedisLockerErr;
 impl Locker for RedisLockerErr {
     type Error = ioerr;
     fn lock(&self, _key: &str) -> Result<bool, Self::Error> {
-        Err(std::io::Error::from_raw_os_error(22))
+        #[cfg(not(windows))]
+        return Err(std::io::Error::from_raw_os_error(22));
+        #[cfg(windows)]
+        return return Err(std::io::Error::from_raw_os_error(10022));
     }
     fn unlock(&self, _key: &str) -> Result<bool, Self::Error> {
         Ok(true)
@@ -427,9 +430,11 @@ async fn test_error_callback() {
 
     let mut f = File::open(path).unwrap();
     let mut buf = String::new();
-    let n = f.read_to_string(&mut buf).unwrap();
-    assert_eq!(buf, "Invalid argument (os error 22)".to_string());
-    assert_eq!(n, 30);
+    f.read_to_string(&mut buf).unwrap();
+    #[cfg(not(windows))]
+    assert!(buf.contains("22"));
+    #[cfg(windows)]
+    assert!(buf.contains("10022"));
 }
 
 #[tokio::test]
