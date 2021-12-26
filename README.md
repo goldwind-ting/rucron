@@ -23,7 +23,7 @@ See the example in `examples` folder.
 ## Quickstart
 ```toml
 [dependencies]
-rucron = "0.1.0"
+rucron = "0.1.1"
 ```
 
 ```rust
