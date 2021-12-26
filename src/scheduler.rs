@@ -228,7 +228,7 @@ where
     /// async fn main(){
     ///     let now = Local::now();
     ///     let mut sch = Scheduler::<(), ()>::new(2, 10);
-    ///     sch.at().await.week(now.weekday().number_from_monday() as i64 - 1,now.hour() as i64,now.minute() as i64,now.second() as i64,)
+    ///     sch.at().await.week(now.weekday().number_from_monday() as i64, now.hour() as i64,now.minute() as i64, now.second() as i64,)
     ///     .await.todo(foo).await;
     ///     let real_time = sch.next_run_with_name("foo").await.unwrap();
     ///     let expect_next_run = now + chrono::Duration::weeks(1);
@@ -463,7 +463,7 @@ where
     /// #[tokio::main]
     /// async fn main(){
     ///     let mut sch = Scheduler::<(), ()>::new(2, 10);
-    ///     sch.every(2).await.week(0, 0, 59, 59).await.todo(foo).await;
+    ///     sch.every(2).await.week(1, 0, 59, 59).await.todo(foo).await;
     ///     assert_eq!(sch.time_unit_with_name("foo").await, Some(4));
     /// }
     /// ```
@@ -618,7 +618,7 @@ where
     /// #[tokio::main]
     /// async fn main(){
     ///     let mut sch = Scheduler::<(), ()>::new(2, 10);
-    ///     sch.every(2).await.week(0, 0, 59, 59).await.todo(foo).await;
+    ///     sch.every(2).await.week(1, 0, 59, 59).await.todo(foo).await;
     ///     assert_eq!(sch.weekday_with_name("foo").await, Some(1));
     /// }
     /// ```

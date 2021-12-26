@@ -498,7 +498,7 @@ async fn test_every_time_unit() {
         .await;
     sch.every(1)
         .await
-        .week(0, 0, 59, 59)
+        .week(1, 0, 59, 59)
         .await
         .todo(working)
         .await;
@@ -514,7 +514,7 @@ async fn test_every_time_unit() {
 async fn test_at_time_unit() {
     let mut sch = Scheduler::<(), RedisLockerOk>::new(1, 10);
     sch.at().await.day(0, 59, 59).await.todo(learn_rust).await;
-    sch.at().await.week(0, 0, 59, 59).await.todo(sing).await;
+    sch.at().await.week(1, 0, 59, 59).await.todo(sing).await;
     assert_eq!(sch.time_unit_with_name("learn_rust").await.unwrap(), 3);
     assert_eq!(sch.time_unit_with_name("sing").await.unwrap(), 4);
 }
@@ -625,7 +625,7 @@ async fn test_at_week_job() {
     sch.at()
         .await
         .week(
-            now.weekday().number_from_monday() as i64 - 1,
+            now.weekday().number_from_monday() as i64,
             now.hour() as i64,
             now.minute() as i64,
             now.second() as i64,
@@ -643,7 +643,7 @@ async fn test_at_week_job() {
     sch.at()
         .await
         .week(
-            now.weekday().number_from_monday() as i64 - 1,
+            (now.weekday().number_from_monday() as i64 + 1) % 7,
             now.hour() as i64,
             now.minute() as i64,
             now.second() as i64,
@@ -655,7 +655,7 @@ async fn test_at_week_job() {
         .await;
 
     let sing_time = sch.next_run_with_name("sing").await.unwrap();
-    assert_ne!(learn_rust_time, sing_time + 6 * 24 * 60 * 60);
+    assert_eq!(learn_rust_time, sing_time + 6 * 24 * 60 * 60);
 }
 
 #[tokio::test]
