@@ -1,4 +1,19 @@
 ## Rucron: A Pure Rust Implementation Job Scheduling Package.
+<a href="https://crates.io/crates/rucron">
+    <img src="https://img.shields.io/crates/v/rucron.svg?style=flat-square"
+    alt="Crates.io version" />
+  </a>  
+<!-- Docs -->
+  <a href="https://docs.rs/rucron/latest/rucron/">
+    <img src="https://img.shields.io/badge/docs-latest-blue.svg?style=flat-square"
+      alt="docs.rs docs" />
+  </a>
+  <!-- Downloads -->
+  <a href="https://crates.io/crates/rucron">
+    <img src="https://img.shields.io/crates/d/rucron.svg?style=flat-square"
+      alt="Download" />
+  </a>  
+
 A job scheduling library writed by rust, which is similar to [gocron](https://github.com/go-co-op/gocron) or linux crontab.  
 The crate currently supports asynchronous task which uses `tokio` runtime.
 
