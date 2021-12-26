@@ -14,7 +14,7 @@ use signal_hook::consts::SIGINT;
 
 
 lazy_static! {
-    static ref DEFAULT_ZERO_CALL_INTERVAL: Duration = Duration::from_secs(1); // default 1 second.
+    static ref DEFAULT_ZERO_CALL_INTERVAL: Duration = Duration::from_secs(1);
 }
 
 /// A `Scheduler` type to represent a span of time, typically used for system
