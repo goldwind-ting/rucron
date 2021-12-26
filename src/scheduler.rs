@@ -6,11 +6,14 @@ use tokio::sync::{mpsc::channel, RwLock};
 use tokio::time::{self, sleep, Duration, Interval};
 extern crate lazy_static;
 use futures::future::Future;
+#[cfg(windows)]
+use signal_hook::consts::SIGINT;
+#[cfg(not(windows))]
 use signal_hook::consts::SIGTSTP; // catch ctrl + z signal
 use std::sync::atomic::{AtomicBool, Ordering};
 
 lazy_static! {
-    static ref DEFAULT_ZERO_CALL_INTERVAL: Duration = Duration::from_secs(1); // default 1 second.
+    static ref DEFAULT_ZERO_CALL_INTERVAL: Duration = Duration::from_secs(1);
 }
 
 /// A `Scheduler` type to represent a span of time, typically used for system
@@ -811,7 +814,12 @@ where
         self.check_job_name().await;
         let (send, mut recv) = channel(1);
         let term = Arc::new(AtomicBool::new(false));
+        #[cfg(not(windows))]
         let _ = signal_hook::flag::register(SIGTSTP, Arc::clone(&term)).map_err(|e| {
+            unreachable!("cann't register signal: {}", e);
+        });
+        #[cfg(windows)]
+        let _ = signal_hook::flag::register(SIGINT, Arc::clone(&term)).map_err(|e| {
             unreachable!("cann't register signal: {}", e);
         });
         let send_trigger = tokio::spawn(async move {
