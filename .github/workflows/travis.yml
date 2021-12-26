@@ -22,16 +22,8 @@ jobs:
           override: true
 
       - run: rustup component add rustfmt
-
-      - uses: actions-rs/cargo@v1
-        with:
-          command: fmt
-          args: --all -- --check
-
-      - uses: actions-rs/cargo@v1
-        with:
-          command: check
-          args: --all
+      - run: cargo fmt --all -- --check
+      - run: cargo check --all 
 
   check-docs:
     runs-on: ubuntu-latest
