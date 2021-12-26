@@ -6,6 +6,7 @@ authors = ["Ban Mengtao <jiuxie@outlook.com>"]
 keywords = ["rust", "cron", "crontab", "scheduler"]
 description = "A Rust Job Scheduling Crate."
 license = "MIT license"
+repository = "https://github.com/goldwind-ting/rucron/"
 
 [dependencies]
 tokio = { version = "1.14.0", features = ["time", "full"] }
