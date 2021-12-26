@@ -191,13 +191,13 @@ where
 
     pub(crate) fn set_weekday(&mut self, w: i64) {
         self.weekday = match w {
-            0 => Some(Weekday::Mon),
-            1 => Some(Weekday::Tue),
-            2 => Some(Weekday::Wed),
-            3 => Some(Weekday::Thu),
-            4 => Some(Weekday::Fri),
-            5 => Some(Weekday::Sat),
-            6 => Some(Weekday::Sun),
+            1 => Some(Weekday::Mon),
+            2 => Some(Weekday::Tue),
+            3 => Some(Weekday::Wed),
+            4 => Some(Weekday::Thu),
+            5 => Some(Weekday::Fri),
+            6 => Some(Weekday::Sat),
+            7 => Some(Weekday::Sun),
             _ => None,
         };
     }

@@ -587,7 +587,7 @@ async fn test_every_week_job() {
     sch.every(1)
         .await
         .week(
-            now.weekday().number_from_monday() as i64 - 1,
+            now.weekday().number_from_monday() as i64,
             now.hour() as i64,
             now.minute() as i64,
             now.second() as i64,
@@ -604,7 +604,7 @@ async fn test_every_week_job() {
     sch.every(1)
         .await
         .week(
-            now.weekday().number_from_monday() as i64,
+            (now.weekday().number_from_monday() as i64 + 1) % 7,
             now.hour() as i64,
             now.minute() as i64,
             now.second() as i64,
