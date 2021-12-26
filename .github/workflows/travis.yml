@@ -1,4 +1,4 @@
-name: Rust
+name: rucron
 
 on:
   push:
@@ -10,8 +10,44 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  format-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
 
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - run: rustup component add rustfmt
+
+      - uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: --all -- --check
+
+      - uses: actions-rs/cargo@v1
+        with:
+          command: check
+          args: --all
+
+  check-docs:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+        profile: minimal
+    - uses: Swatinem/rust-cache@v1
+    - name: cargo doc
+      run: cargo doc --all-features --no-deps
+
+  test:
+    name: Test
     runs-on: ubuntu-latest
 
     steps:
