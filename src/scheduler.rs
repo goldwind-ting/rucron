@@ -188,7 +188,8 @@ where
         self.size += 1;
     }
 
-    /// Schedule a new periodic job.`interval` is a certain time unit, e.g. second, minute, hour, day or week.
+    /// Schedule a new periodic job.  
+    /// - `interval` is a certain integer, and it's unit is second, minute, hour, day or week.
     ///
     /// # Examples
     ///
@@ -292,7 +293,7 @@ where
             .get_mut(self.size - 1)
             .map_or_else(
                 || {
-                    unreachable!("cann't get the job, job index: {}", self.size - 1);
+                    panic!("cann't get the job, job index: {}", self.size - 1);
                 },
                 |job| async move {
                     if is_immediately_run {
@@ -338,7 +339,7 @@ where
         let mut guard = self.jobs.write().await;
         guard.get_mut(self.size - 1).map_or_else(
             || {
-                unreachable!("cann't get the job, job index: {}", self.size - 1);
+                panic!("cann't get the job, job index: {}", self.size - 1);
             },
             |job| {
                 if job.get_is_at() {
@@ -380,7 +381,7 @@ where
         let mut guard = self.jobs.write().await;
         guard.get_mut(self.size - 1).map_or_else(
             || {
-                unreachable!("cann't get the job, index: {}", self.size - 1);
+                panic!("cann't get the job, index: {}", self.size - 1);
             },
             |job| {
                 if job.get_is_at() {
@@ -422,7 +423,7 @@ where
         let mut guard = self.jobs.write().await;
         guard.get_mut(self.size - 1).map_or_else(
             || {
-                unreachable!("cann't get the job, job index: {}", self.size - 1);
+                panic!("cann't get the job, job index: {}", self.size - 1);
             },
             |job| {
                 if job.get_is_at() {
@@ -464,7 +465,7 @@ where
         let mut guard = self.jobs.write().await;
         guard.get_mut(self.size - 1).map_or_else(
             || {
-                unreachable!("cann't get the job, job index: {}", self.size - 1);
+                panic!("cann't get the job, job index: {}", self.size - 1);
             },
             |job| {
                 job.set_unit(TimeUnit::Day);
@@ -501,7 +502,7 @@ where
         let mut guard = self.jobs.write().await;
         guard.get_mut(self.size - 1).map_or_else(
             || {
-                unreachable!("cann't get the job, job index: {}", self.size - 1);
+                panic!("cann't get the job, job index: {}", self.size - 1);
             },
             |job| {
                 job.set_unit(TimeUnit::Week);
@@ -544,7 +545,7 @@ where
             .get_mut(self.size - 1)
             .map_or_else(
                 || {
-                    unreachable!("cann't get the job, job index: {}", self.size - 1);
+                    panic!("cann't get the job, job index: {}", self.size - 1);
                 },
                 |job| async move {
                     job.set_job(f, false).await;
@@ -586,7 +587,7 @@ where
             .get_mut(self.size - 1)
             .map_or_else(
                 || {
-                    unreachable!("cann't get the job, job index: {}", self.size - 1);
+                    panic!("cann't get the job, job index: {}", self.size - 1);
                 },
                 |job| async move {
                     job.set_job(f, true).await;
@@ -798,7 +799,7 @@ where
         let guard = self.jobs.read().await;
         guard.iter().enumerate().for_each(|(ind, job)| {
             if job.get_job_name().len() <= 0 {
-                unreachable!("please set job, job index: {}", ind);
+                panic!("please set job, job index: {}", ind);
             }
         });
     }
@@ -811,7 +812,8 @@ where
         }
     }
 
-    /// Start scheduler and run all jobs.
+    /// Start scheduler and run all jobs.  
+    /// The program will stop if it catches `SIGTSTP` signal in linux or `SIGINT` signal in windows.
     ///
     /// # Examples
     ///
@@ -843,18 +845,18 @@ where
         let term = Arc::new(AtomicBool::new(false));
         #[cfg(not(windows))]
         let _ = signal_hook::flag::register(SIGTSTP, Arc::clone(&term)).map_err(|e| {
-            unreachable!("cann't register signal: {}", e);
+            panic!("cann't register signal: {}", e);
         });
         #[cfg(windows)]
         let _ = signal_hook::flag::register(SIGINT, Arc::clone(&term)).map_err(|e| {
-            unreachable!("cann't register signal: {}", e);
+            panic!("cann't register signal: {}", e);
         });
         let send_trigger = tokio::spawn(async move {
             while !term.load(Ordering::Relaxed) {
                 sleep(Duration::from_secs(1)).await;
             }
             let _ = send.send(()).await.map_err(|e| {
-                unreachable!("cann't send signal to channel, {}", e);
+                panic!("cann't send signal to channel, {}", e);
             });
         });
         let jobs = self.jobs.clone();

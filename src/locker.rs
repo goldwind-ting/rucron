@@ -1,12 +1,14 @@
 use std::error;
 
-/// A distributed lock.
+/// A trait which provides a distributed lock.
 pub trait Locker {
     type Error: error::Error + Send + Sync + 'static;
+    /// attempts to get the lock.
     fn lock(&self, key: &str) -> Result<bool, Self::Error> {
         println!("{}", key);
         Ok(true)
     }
+    /// attempts to release the lock.
     fn unlock(&self, key: &str) -> Result<bool, Self::Error> {
         println!("{}", key);
         Ok(true)
