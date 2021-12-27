@@ -1,6 +1,6 @@
 use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Weekday};
 use futures::future::{BoxFuture, Future};
-use std::{any::type_name, fmt, sync::Arc, unreachable};
+use std::{any::type_name, fmt, sync::Arc, panic};
 use tokio::sync::RwLock;
 
 use crate::locker::Locker;
@@ -133,10 +133,10 @@ where
         F: Future<Output = R> + Send + 'static,
     {
         if let None = self.time_unit {
-            unreachable!("must set time unit!");
+            panic!("must set time unit!");
         }
         if self.is_at && self.at_time.is_none() && self.weekday.is_none() {
-            unreachable!("please set run time of job: day or weekday!");
+            panic!("please set run time of job: day or weekday!");
         }
         {
             let mut job_guard = self.job_core.write().await;
@@ -172,10 +172,12 @@ where
         self.is_at
     }
 
+    #[inline]
     pub(crate) fn immediately_run(&mut self) {
         self.is_immediately_run = true
     }
 
+    #[inline]
     pub(crate) fn runable(&self) -> bool {
         self.next_run.le(&Local::now())
     }
@@ -184,11 +186,13 @@ where
         self.at_time = Some(Duration::hours(h) + Duration::minutes(m) + Duration::seconds(s));
     }
 
+    #[inline]
     pub(crate) async fn set_locker(&mut self, locker: L) {
         let mut job_guard = self.job_core.write().await;
         (*job_guard).locker = Some(locker);
     }
 
+    #[inline]
     pub(crate) fn set_weekday(&mut self, w: i64) {
         self.weekday = match w {
             1 => Some(Weekday::Mon),
@@ -214,10 +218,12 @@ where
         self.next_run
     }
 
+    #[inline]
     pub(crate) fn get_last_run(&self) -> DateTime<Local> {
         self.last_run
     }
 
+    #[inline]
     pub(crate) fn get_weekday(&self) -> Option<Weekday> {
         self.weekday
     }
