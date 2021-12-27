@@ -33,8 +33,9 @@ where
     R: 'static + Send + Sync,
     L: 'static + Send + Sync + Locker,
 {
-    /// Creates a new instance of an `Scheduler<R, L>`. `interval` representent how much times to checkout runnable jobs.
-    /// `capacity` is the capicity of jobs. Please note `interval` is 1 by default.
+    /// Creates a new instance of an `Scheduler<R, L>`. 
+    /// - `interval` set the interval how often `jobs` should be checked, default to 1.
+    /// - `capacity` is the capicity of jobs. Please note `interval` is 1 by default.
     ///
     /// # Examples
     ///
@@ -75,6 +76,7 @@ where
     ///     assert_eq!(sch.len(), 2);
     /// }
     /// ```
+    #[inline]
     pub fn len(&self) -> usize {
         self.size
     }
@@ -245,10 +247,15 @@ where
         self
     }
 
-    /// Set optional config for `Scheduler`.`is_immediately_run` represents wheather to run the job immediately.
-    /// `err_callback` set the error handeler which is called when exception occurs, if it is `None`, `Scheduler` print error by default.
-    /// `locker` set the distributed lock.
+    /// Set optional config for `Scheduler`.  
+    /// - `is_immediately_run` represents wheather to run the job immediately.
+    /// - `err_callback` set the error handeler which is called when exception occurs, if it is `None`, `Scheduler` print error by default.
+    /// - `locker` set the distributed lock.
     ///
+    /// # Panics
+    /// 
+    /// Panics if `size` is less than 1.
+    /// 
     /// # Examples
     ///
     /// ```
@@ -305,6 +312,10 @@ where
 
     /// Set the time unit to hour.
     ///
+    /// # Panics
+    /// 
+    /// Panics if `size` is less than 1 or `is_at` inside the job is true.
+    /// 
     /// # Examples
     ///
     /// ```
@@ -343,7 +354,11 @@ where
     }
 
     /// Set the time unit to minute.
-    ///
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if `size` is less than 1 or `is_at` inside the job is true.
+    /// 
     /// # Examples
     ///
     /// ```
@@ -381,7 +396,11 @@ where
     }
 
     /// Set the time unit to second.
-    ///
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if `size` is less than 1 or `is_at` inside the job is true.
+    /// 
     /// # Examples
     ///
     /// ```
@@ -420,6 +439,10 @@ where
 
     /// Set the time unit to day.
     ///
+    /// # Panics
+    /// 
+    /// Panics if `size` is less than 1.
+    /// 
     /// # Examples
     ///
     /// ```
@@ -453,6 +476,10 @@ where
 
     /// Set the time unit to week.
     ///
+    /// # Panics
+    /// 
+    /// Panics if `size` is less than 1.
+    /// 
     /// # Examples
     ///
     /// ```
