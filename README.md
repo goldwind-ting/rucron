@@ -15,7 +15,7 @@
   </a>  
 
 A job scheduling library writed by rust, which is similar to [gocron](https://github.com/go-co-op/gocron) or linux crontab.  
-The crate currently supports asynchronous task which uses `tokio` runtime.
+The crate currently only supports asynchronous task which uses `tokio` runtime.
 
 ## Usage
 See the example in `examples` folder.
