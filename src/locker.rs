@@ -1,26 +1,18 @@
-use std::error;
+use crate::handler::ArgStorage;
+use std::sync::Arc;
 
 /// A trait which provides a distributed lock.
 pub trait Locker {
-    type Error: error::Error + Send + Sync + 'static;
     /// attempts to get the lock.
-    fn lock(&self, key: &str) -> Result<bool, Self::Error> {
+    fn lock(&self, key: &str, _storage: Arc<ArgStorage>) -> bool {
         println!("{}", key);
-        Ok(true)
+        true
     }
     /// attempts to release the lock.
-    fn unlock(&self, key: &str) -> Result<bool, Self::Error> {
+    fn unlock(&self, key: &str, _storage: Arc<ArgStorage>) -> bool {
         println!("{}", key);
-        Ok(true)
+        true
     }
 }
 
-impl Locker for () {
-    type Error = std::io::Error;
-    fn lock(&self, _key: &str) -> Result<bool, Self::Error> {
-        panic!("please implement Locker mannually");
-    }
-    fn unlock(&self, _key: &str) -> Result<bool, Self::Error> {
-        panic!("please implement Locker mannually");
-    }
-}
+impl Locker for () {}

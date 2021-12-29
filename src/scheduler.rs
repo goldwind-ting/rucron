@@ -1,13 +1,16 @@
+use crate::handler::{ArgStorage, JobHandler, Task};
 use crate::job::{Job, TimeUnit};
 use crate::locker::Locker;
 
-use std::{any::type_name, fmt, sync::Arc};
+use std::{fmt, sync::Arc};
 use tokio::sync::{mpsc::channel, RwLock};
 use tokio::time::{self, sleep, Duration, Interval};
 extern crate lazy_static;
-use futures::future::Future;
+use async_trait::async_trait;
+
 #[cfg(windows)]
 use signal_hook::consts::SIGINT;
+
 #[cfg(not(windows))]
 use signal_hook::consts::SIGTSTP; // catch ctrl + z signal
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,21 +20,57 @@ lazy_static! {
 }
 
 /// `Scheduler` strores all jobs and number of jobs.
-pub struct Scheduler<R, L>
+pub struct Scheduler<T, L>
 where
-    R: 'static + Send + Sync,
-    L: 'static + Send + Sync + Locker,
+    T: 'static + Send,
+    L: 'static + Send,
 {
     scan_interval: u64,
     size: usize,
-    jobs: Arc<RwLock<Vec<Job<R, L>>>>,
+    task: T,
+    locker: Option<L>,
+    arg_storage: Option<Arc<ArgStorage>>,
+    jobs: Arc<RwLock<Vec<Job>>>,
 }
 
-impl<R, L> Scheduler<R, L>
+#[async_trait]
+impl<T, L> JobHandler for Scheduler<T, L>
 where
-    R: 'static + Send + Sync,
-    L: 'static + Send + Sync + Locker,
+    T: JobHandler + 'static + Send + Sync,
+    L: Locker + 'static + Send + Sync,
 {
+    async fn call(&self, args: Arc<ArgStorage>, name: String) {
+        JobHandler::call(&self.task, args, name).await;
+    }
+
+    fn name(&self) -> String {
+        return self.task.name();
+    }
+}
+
+pub struct EmptyTask;
+
+impl EmptyTask {
+    fn fake_task() -> Self {
+        Self
+    }
+}
+
+impl Clone for EmptyTask {
+    fn clone(&self) -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl JobHandler for EmptyTask {
+    async fn call(&self, _args: Arc<ArgStorage>, _name: String) {}
+    fn name(&self) -> String {
+        return "FakeJob".into();
+    }
+}
+
+impl<L: Send> Scheduler<EmptyTask, L> {
     /// Creates a new instance of an `Scheduler<R, L>`.
     /// - `interval` set the interval how often `jobs` should be checked, default to 1.
     /// - `capacity` is the capicity of jobs. Please note `interval` is 1 by default.
@@ -44,11 +83,35 @@ where
     ///
     /// let mut sch = Scheduler::<(), ()>::new(2, 10);
     /// ```
-    pub fn new(interval: u64, capacity: usize) -> Self {
+
+    pub fn new(interval: u64, size: usize) -> Self {
         Self {
-            jobs: Arc::new(RwLock::new(Vec::with_capacity(capacity))),
             scan_interval: interval,
             size: 0,
+            task: EmptyTask::fake_task(),
+            arg_storage: Some(Arc::new(ArgStorage::new())),
+            jobs: Arc::new(RwLock::new(Vec::with_capacity(size))),
+            locker: None,
+        }
+    }
+}
+
+impl<TH, L> Scheduler<TH, L>
+where
+    TH: JobHandler + Send + Sync + 'static + Clone,
+    L: Locker + 'static + Send + Sync + Clone,
+{
+    fn map<F, T2: Send + Sync + Clone>(self, f: F) -> Scheduler<T2, L>
+    where
+        F: FnOnce(TH, Option<L>) -> T2,
+    {
+        Scheduler {
+            task: f(self.task, self.locker.clone()).clone(),
+            arg_storage: self.arg_storage,
+            jobs: self.jobs,
+            locker: self.locker,
+            scan_interval: self.scan_interval,
+            size: self.size,
         }
     }
 
@@ -99,20 +162,31 @@ where
     ///     assert!(sch.is_scheduled(foo).await);
     /// }
     /// ```
-    pub async fn is_scheduled<F>(&self, _job: fn() -> F) -> bool
-    where
-        F: Future<Output = R> + Send + 'static,
-    {
-        let job_name_tokens: Vec<&str> = type_name::<F>().split("::").collect();
-        let guard = self.jobs.read().await;
+    pub fn is_scheduled(&self, name: &str) -> bool {
+        let guard = self.jobs.try_read().unwrap();
         for i in 0..guard.len() {
-            if guard[i].get_job_name() == job_name_tokens[job_name_tokens.len() - 2] {
+            if guard[i].get_job_name() == name {
                 return true;
             }
         }
         return false;
     }
 
+    pub fn set_arg_storage(&mut self, storage: ArgStorage) {
+        self.arg_storage.replace(Arc::new(storage));
+    }
+
+    pub fn set_locker(&mut self, locker: L) {
+        self.locker = Some(locker);
+    }
+
+    pub fn need_lock(self) -> Self {
+        {
+            let mut guard = self.jobs.try_write().unwrap();
+            guard.get_mut(self.size - 1).unwrap().need_locker();
+        }
+        self
+    }
     /// Return all names of job which is added in `jobs`.
     ///
     /// # Examples
@@ -174,16 +248,16 @@ where
     ///     assert_eq!(idle - now, 2);
     /// }
     /// ```
-    pub async fn idle_seconds(&self) -> Option<i64> {
-        let guard = self.jobs.read().await;
+    pub fn idle_seconds(&self) -> Option<i64> {
+        let guard = self.jobs.try_read().unwrap();
         guard
             .iter()
             .min_by(|x, y| x.get_next_run().cmp(&y.get_next_run()))
             .and_then(|job| Some(job.get_next_run().timestamp()))
     }
 
-    async fn insert_job(&mut self, job: Job<R, L>) {
-        self.jobs.write().await.push(job);
+    fn insert_job(&mut self, job: Job) {
+        self.jobs.try_write().unwrap().push(job);
         self.size += 1;
     }
 
@@ -210,9 +284,9 @@ where
     /// }
     ///
     /// ```
-    pub async fn every(&mut self, interval: i32) -> &Self {
+    pub fn every(mut self, interval: i32) -> Self {
         let job = Job::new(interval, false);
-        self.insert_job(job).await;
+        self.insert_job(job);
         self
     }
 
@@ -241,72 +315,29 @@ where
     /// }
     ///
     /// ```
-    pub async fn at(&mut self) -> &Self {
+    pub fn at(mut self) -> Self {
         let job = Job::new(1, true);
-        self.insert_job(job).await;
+        self.insert_job(job);
         self
     }
 
-    /// Set optional config for `Scheduler`.  
-    /// - `is_immediately_run` represents wheather to run the job immediately.
-    /// - `err_callback` set the error handeler which is called when exception occurs, if it is `None`, `Scheduler` print error by default.
-    /// - `locker` set the distributed lock.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `size` is less than 1.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use rucron::{Scheduler, Locker};
-    ///
-    /// struct SchLocker;
-    ///
-    /// impl Locker for SchLocker{
-    ///     type Error=std::io::Error;
-    /// }
-    ///
-    /// async fn foo(){
-    ///     println!("foo");
-    /// }
-    ///
-    /// fn err_callback_mock(err: std::io::Error){
-    ///     println!("error: {}", err);
-    /// }
-    ///
-    /// #[tokio::main]
-    /// async fn main(){
-    ///     let mut sch = Scheduler::<(), SchLocker>::new(2, 10);
-    ///     sch.every(2).await.second().await.with_opts(false, Some(Box::new(err_callback_mock)), Some(SchLocker)).await.todo(foo).await;
-    /// }
-    /// ```
-    pub async fn with_opts<E: Fn(<L as Locker>::Error) + Send + Sync + 'static>(
-        &self,
-        is_immediately_run: bool,
-        err_callback: Option<Box<E>>,
-        locker: Option<L>,
-    ) -> &Self {
-        let mut guard = self.jobs.write().await;
-        guard
-            .get_mut(self.size - 1)
-            .map_or_else(
-                || {
-                    panic!("cann't get the job, job index: {}", self.size - 1);
-                },
-                |job| async move {
-                    if is_immediately_run {
-                        job.immediately_run();
-                    };
-                    if let Some(call_back) = err_callback {
-                        job.set_err_callback(call_back).await;
-                    };
-                    if let Some(l) = locker {
-                        job.set_locker(l).await;
-                    }
-                },
-            )
-            .await;
+    pub fn immediately_run(self) -> Self {
+        {
+            let mut guard = self.jobs.try_write().unwrap();
+            let cur_job = guard.get_mut(self.size - 1).unwrap();
+            cur_job.immediately_run();
+        }
+        self
+    }
+
+    pub fn with_unlock(self) -> Self {
+        {
+            let mut guard = self.jobs.try_write().unwrap();
+            let name = guard.get_mut(self.size - 1).unwrap().get_job_name();
+            self.locker
+                .clone()
+                .and_then(|l| Some(l.unlock(&name[..], self.arg_storage.clone().unwrap())));
+        }
         self
     }
 
@@ -334,22 +365,24 @@ where
     ///     assert_eq!(sch.time_unit_with_name("foo").await, Some(2));
     /// }
     /// ```
-    pub async fn hour(&self) -> &Self {
-        let mut guard = self.jobs.write().await;
-        guard.get_mut(self.size - 1).map_or_else(
-            || {
-                panic!("cann't get the job, job index: {}", self.size - 1);
-            },
-            |job| {
-                if job.get_is_at() {
-                    panic!(
-                        "At is only allowed daily or weekly job, job index: {}",
-                        self.size - 1
-                    );
-                }
-                job.set_unit(TimeUnit::Hour);
-            },
-        );
+    pub fn hour(self) -> Self {
+        {
+            let mut guard = self.jobs.try_write().unwrap();
+            guard.get_mut(self.size - 1).map_or_else(
+                || {
+                    panic!("cann't get the job, job index: {}", self.size - 1);
+                },
+                |job| {
+                    if job.get_is_at() {
+                        panic!(
+                            "At is only allowed daily or weekly job, job index: {}",
+                            self.size - 1
+                        );
+                    }
+                    job.set_unit(TimeUnit::Hour);
+                },
+            );
+        }
         self
     }
 
@@ -376,22 +409,24 @@ where
     ///     assert_eq!(sch.time_unit_with_name("foo").await, Some(1));
     /// }
     /// ```
-    pub async fn minute(&self) -> &Self {
-        let mut guard = self.jobs.write().await;
-        guard.get_mut(self.size - 1).map_or_else(
-            || {
-                panic!("cann't get the job, index: {}", self.size - 1);
-            },
-            |job| {
-                if job.get_is_at() {
-                    panic!(
-                        "At is only allowed daily or weekly job, job index: {}",
-                        self.size - 1
-                    );
-                }
-                job.set_unit(TimeUnit::Minute);
-            },
-        );
+    pub fn minute(self) -> Self {
+        {
+            let mut guard = self.jobs.try_write().unwrap();
+            guard.get_mut(self.size - 1).map_or_else(
+                || {
+                    panic!("cann't get the job, index: {}", self.size - 1);
+                },
+                |job| {
+                    if job.get_is_at() {
+                        panic!(
+                            "At is only allowed daily or weekly job, job index: {}",
+                            self.size - 1
+                        );
+                    }
+                    job.set_unit(TimeUnit::Minute);
+                },
+            );
+        }
         self
     }
 
@@ -418,22 +453,24 @@ where
     ///     assert_eq!(sch.time_unit_with_name("foo").await, Some(0));
     /// }
     /// ```
-    pub async fn second(&self) -> &Self {
-        let mut guard = self.jobs.write().await;
-        guard.get_mut(self.size - 1).map_or_else(
-            || {
-                panic!("cann't get the job, job index: {}", self.size - 1);
-            },
-            |job| {
-                if job.get_is_at() {
-                    panic!(
-                        "At is only allowed daily or weekly job, job index: {}",
-                        self.size - 1
-                    );
-                }
-                job.set_unit(TimeUnit::Second);
-            },
-        );
+    pub fn second(self) -> Self {
+        {
+            let mut guard = self.jobs.try_write().unwrap();
+            guard.get_mut(self.size - 1).map_or_else(
+                || {
+                    panic!("cann't get the job, job index: {}", self.size - 1);
+                },
+                |job| {
+                    if job.get_is_at() {
+                        panic!(
+                            "At is only allowed daily or weekly job, job index: {}",
+                            self.size - 1
+                        );
+                    }
+                    job.set_unit(TimeUnit::Second);
+                },
+            );
+        }
         self
     }
 
@@ -460,17 +497,19 @@ where
     ///     assert_eq!(sch.time_unit_with_name("foo").await, Some(3));
     /// }
     /// ```
-    pub async fn day(&self, h: i64, m: i64, s: i64) -> &Self {
-        let mut guard = self.jobs.write().await;
-        guard.get_mut(self.size - 1).map_or_else(
-            || {
-                panic!("cann't get the job, job index: {}", self.size - 1);
-            },
-            |job| {
-                job.set_unit(TimeUnit::Day);
-                job.set_at_time(h, m, s);
-            },
-        );
+    pub fn day(self, h: i64, m: i64, s: i64) -> Self {
+        {
+            let mut guard = self.jobs.try_write().unwrap();
+            guard.get_mut(self.size - 1).map_or_else(
+                || {
+                    panic!("cann't get the job, job index: {}", self.size - 1);
+                },
+                |job| {
+                    job.set_unit(TimeUnit::Day);
+                    job.set_at_time(h, m, s);
+                },
+            );
+        }
         self
     }
 
@@ -497,18 +536,20 @@ where
     ///     assert_eq!(sch.time_unit_with_name("foo").await, Some(4));
     /// }
     /// ```
-    pub async fn week(&self, w: i64, h: i64, m: i64, s: i64) -> &Self {
-        let mut guard = self.jobs.write().await;
-        guard.get_mut(self.size - 1).map_or_else(
-            || {
-                panic!("cann't get the job, job index: {}", self.size - 1);
-            },
-            |job| {
-                job.set_unit(TimeUnit::Week);
-                job.set_at_time(h, m, s);
-                job.set_weekday(w);
-            },
-        );
+    pub fn week(self, w: i64, h: i64, m: i64, s: i64) -> Self {
+        {
+            let mut guard = self.jobs.try_write().unwrap();
+            guard.get_mut(self.size - 1).map_or_else(
+                || {
+                    panic!("cann't get the job, job index: {}", self.size - 1);
+                },
+                |job| {
+                    job.set_unit(TimeUnit::Week);
+                    job.set_at_time(h, m, s);
+                    job.set_weekday(w);
+                },
+            );
+        }
         self
     }
 
@@ -539,65 +580,63 @@ where
     ///     sch.every(6).await.second().await.todo(bar).await;
     /// }
     /// ```
-    pub async fn todo<F>(&self, f: fn() -> F)
-    where
-        F: Future<Output = R> + Send + 'static,
-    {
-        let mut guard = self.jobs.write().await;
-        guard
-            .get_mut(self.size - 1)
-            .map_or_else(
-                || {
-                    panic!("cann't get the job, job index: {}", self.size - 1);
-                },
-                |job| async move {
-                    job.set_job(f, false).await;
-                },
-            )
-            .await;
+    pub async fn todo<T: JobHandler + Send + Sync + Clone>(
+        self,
+        task: T,
+    ) -> Scheduler<Task<T, TH, L>, L> {
+        let name = task.name();
+        {
+            let mut guard = self.jobs.write().await;
+            let cur_job = guard.get_mut(self.size - 1).unwrap();
+            cur_job.set_name(name.clone());
+            cur_job.schedule_run_time();
+        }
+        let need_lock: bool;
+        {
+            let guard = self.jobs.read().await;
+            let cur_job = guard.get(self.size - 1).unwrap();
+            if let None = cur_job.get_unit() {
+                panic!("must set time unit!");
+            }
+            need_lock = cur_job.has_locker();
+            if cur_job.get_is_at()
+                && cur_job.get_at_time().is_none()
+                && cur_job.get_weekday().is_none()
+            {
+                panic!("please set run time of job: day or weekday!");
+            }
+            if cur_job.get_immediately_run() {
+                let cur_task = task.clone();
+                let arg = self.arg_storage.clone().unwrap();
+                tokio::spawn(async move {
+                    JobHandler::call(&cur_task, arg, name).await;
+                });
+            }
+        }
+        self.map(|fallback, locker| Task {
+            name: task.name().clone(),
+            task,
+            fallback,
+            locker,
+            need_lock,
+        })
     }
 
-    /// Config function to be executed for `job`, and execute `unlock` before the first run.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use rucron::{Scheduler, Locker};
-    ///
-    /// struct SchLocker;
-    ///
-    /// impl Locker for SchLocker{
-    ///     type Error=std::io::Error;
-    /// }
-    ///
-    /// async fn foo(){
-    ///     println!("foo");
-    /// }
-    ///
-    /// #[tokio::main]
-    /// async fn main(){
-    ///     let mut sch = Scheduler::<(), SchLocker>::new(2, 10);
-    ///     sch.every(2).await.second().await.todo_with_unlock(foo).await;
-    /// }
-    /// ```
-    /// ```
-    pub async fn todo_with_unlock<F>(&self, f: fn() -> F)
-    where
-        F: Future<Output = R> + Send + 'static,
-    {
-        let mut guard = self.jobs.write().await;
-        guard
-            .get_mut(self.size - 1)
-            .map_or_else(
-                || {
-                    panic!("cann't get the job, job index: {}", self.size - 1);
-                },
-                |job| async move {
-                    job.set_job(f, true).await;
-                },
-            )
-            .await;
-    }
+    // pub async fn todo_with_unlock<F>(&self, f: H)
+    // {
+    //     let mut guard = self.jobs.write().await;
+    //     guard
+    //         .get_mut(self.size - 1)
+    //         .map_or_else(
+    //             || {
+    //                 panic!("cann't get the job, job index: {}", self.size - 1);
+    //             },
+    //             |job| async move {
+    //                 job.set_job(f, true).await;
+    //             },
+    //         )
+    //         .await;
+    // }
 
     /// Return the name of next upcoming job, return `None` if `size` is 0.
     ///
@@ -624,8 +663,8 @@ where
     ///     assert_eq!(sch.next_run().await, Some("foo".to_string()));
     /// }
     /// ```
-    pub async fn next_run(&self) -> Option<String> {
-        let guard = self.jobs.read().await;
+    pub fn next_run(&self) -> Option<String> {
+        let guard = self.jobs.try_read().unwrap();
         guard
             .iter()
             .min_by(|a, b| a.get_next_run().cmp(&b.get_next_run()))
@@ -656,8 +695,8 @@ where
     ///     assert_eq!(sch.weekday_with_name("foo").await, Some(1));
     /// }
     /// ```
-    pub async fn weekday_with_name(&self, job_name: &str) -> Option<u32> {
-        let guard = self.jobs.read().await;
+    pub fn weekday_with_name(&self, job_name: &str) -> Option<u32> {
+        let guard = self.jobs.try_read().unwrap();
         for job in guard.iter() {
             if job.get_job_name().as_str() == job_name {
                 return job.get_weekday().and_then(|w| Some(w.number_from_monday()));
@@ -689,8 +728,8 @@ where
     ///     assert_eq!(sch.time_unit_with_name("foo").await, Some(0));
     /// }
     /// ```
-    pub async fn time_unit_with_name(&self, job_name: &str) -> Option<i8> {
-        let guard = self.jobs.read().await;
+    pub fn time_unit_with_name(&self, job_name: &str) -> Option<i8> {
+        let guard = self.jobs.try_read().unwrap();
         for job in guard.iter() {
             if job.get_job_name().as_str() == job_name {
                 return job.get_time_unit();
@@ -720,8 +759,8 @@ where
     ///     assert_eq!(sch.next_run_with_name("foo").await.unwrap(), now + 2);
     /// }
     /// ```
-    pub async fn next_run_with_name(&self, job_name: &str) -> Option<i64> {
-        let guard = self.jobs.read().await;
+    pub fn next_run_with_name(&self, job_name: &str) -> Option<i64> {
+        let guard = self.jobs.try_read().unwrap();
         for job in guard.iter() {
             if job.get_job_name().as_str() == job_name {
                 return Some(job.get_next_run().timestamp());
@@ -751,8 +790,8 @@ where
     ///     assert_eq!(sch.last_run_with_name("foo").await.unwrap(), now);
     /// }
     /// ```
-    pub async fn last_run_with_name(&self, job_name: &str) -> Option<i64> {
-        let guard = self.jobs.read().await;
+    pub fn last_run_with_name(&self, job_name: &str) -> Option<i64> {
+        let guard = self.jobs.try_read().unwrap();
         for job in guard.iter() {
             if job.get_job_name().as_str() == job_name {
                 return Some(job.get_last_run().timestamp());
@@ -787,8 +826,8 @@ where
     ///     assert_eq!(sch.get_job_names().await, vec!["bar"]);
     /// }
     /// ```
-    pub async fn cancel_job(&mut self, job_name: String) {
-        let mut guard = self.jobs.write().await;
+    pub fn cancel_job(&mut self, job_name: &str) {
+        let mut guard = self.jobs.try_write().unwrap();
         match guard.iter().position(|j| j.get_job_name() == job_name) {
             Some(i) => {
                 guard.remove(i);
@@ -798,8 +837,8 @@ where
         };
     }
 
-    async fn check_job_name(&self) {
-        let guard = self.jobs.read().await;
+    fn check_job_name(&self) {
+        let guard = self.jobs.try_read().unwrap();
         guard.iter().enumerate().for_each(|(ind, job)| {
             if job.get_job_name().len() <= 0 {
                 panic!("please set job, job index: {}", ind);
@@ -845,7 +884,7 @@ where
     /// }
     /// ```
     pub async fn start(&self) {
-        self.check_job_name().await;
+        self.check_job_name();
         let (send, mut recv) = channel(1);
         let term = Arc::new(AtomicBool::new(false));
         #[cfg(not(windows))]
@@ -866,46 +905,52 @@ where
         });
         let jobs = self.jobs.clone();
         let inter = self.scan_interval;
+        let task = self.task.clone();
+        let storage = self.arg_storage.clone();
         let mut interval: Interval = self.gen_call_interval(inter);
         let recv_trigger = tokio::spawn(async move {
             loop {
                 let jobs_loop = jobs.clone();
+                let task_loop = task.clone();
+                let storage_loop = storage.clone();
                 tokio::select! {
                 _ = interval.tick() => {
-                    tokio::spawn(async move{
-                        let mut size:i64 = -1;
-                        {
-                            let mut guard = jobs_loop.write().await;
-                            guard.sort_by(|a, b|{
-                                a.get_next_run().cmp(&b.get_next_run())
-                            });
-                        }
-                        {
-                            let guard = jobs_loop.read().await;
-                            for (ind, job) in guard.iter().enumerate(){
-                                if job.runable(){
-                                    size = (ind + 1) as i64;
-                                }else{
-                                    break;
-                                }
+
+                    let mut size:i64 = -1;
+                    {
+                        let mut guard = jobs_loop.write().await;
+                        guard.sort_by(|a, b|{
+                            a.get_next_run().cmp(&b.get_next_run())
+                        });
+                    }
+
+                    {
+                        let guard = jobs_loop.read().await;
+                        for (ind, job) in guard.iter().enumerate(){
+                            if job.runable(){
+                                size = (ind + 1) as i64;
+                            }else{
+                                break;
                             }
                         }
-                        if size < 0 {
-                            return;
+                    }
+                    if size < 0 {
+                        continue;
+                    }
+                    {
+                        let mut guard = jobs_loop.write().await;
+                        for i in (0..size as usize).into_iter(){
+                            guard[i].schedule_run_time();
                         }
-                        {
-                            for i in (0..size as usize).into_iter(){
-                                {
-                                    let mut guard = jobs_loop.write().await;
-                                    guard[i].schedule_run_time();
-                                }
+                    }
+                    tokio::spawn(async move{
+                        let guard = jobs_loop.read().await;
 
-                                {
-                                    let guard = jobs_loop.read().await;
-                                    guard[i].run().await;
-                                }
-                            };
-                        }
+                        for i in (0..size as usize).into_iter(){
+                            let sl = storage_loop.clone().unwrap();
+                            println!("{} next is {}", guard[i].get_job_name(), guard[i].get_next_run().timestamp());
+                            JobHandler::call(&task_loop, sl, guard[i].get_job_name()).await;
+                        };
                     });
                 },
                 Some(_) = recv.recv() => {
@@ -921,10 +966,10 @@ where
     }
 }
 
-impl<R, L> fmt::Debug for Scheduler<R, L>
+impl<T, L> fmt::Debug for Scheduler<T, L>
 where
-    R: 'static + Send + Sync,
-    L: 'static + Send + Sync + Locker,
+    T: JobHandler + 'static + Send + Sync,
+    L: Locker + 'static + Send + Sync,
 {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         let guard = self.jobs.try_read().unwrap();
@@ -932,6 +977,7 @@ where
             .field("scan_interval", &self.scan_interval)
             .field("size", &self.size)
             .field("jobs", &guard)
+            .field("arg_storage", &self.arg_storage)
             .finish()
     }
 }

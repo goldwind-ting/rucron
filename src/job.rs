@@ -1,9 +1,5 @@
 use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Weekday};
-use futures::future::{BoxFuture, Future};
-use std::{any::type_name, fmt, panic, sync::Arc};
-use tokio::sync::RwLock;
-
-use crate::locker::Locker;
+use std::fmt;
 
 /// Time unit.
 pub(crate) enum TimeUnit {
@@ -47,41 +43,8 @@ impl fmt::Debug for TimeUnit {
     }
 }
 
-struct JobArcHandler<R, L>
-where
-    R: 'static + Send + Sync,
-    L: 'static + Send + Sync + Locker,
-{
-    // scheduled function or job.
-    job: Option<Box<dyn Fn() -> BoxFuture<'static, R> + Send + Sync + 'static>>,
-    // distributed lock.
-    locker: Option<L>,
-    // error handeler used by Locker.
-    err_callback: Box<dyn Fn(<L as Locker>::Error) + Send + Sync + 'static>,
-}
-
-impl<R, L> JobArcHandler<R, L>
-where
-    R: 'static + Send + Sync,
-    L: 'static + Send + Sync + Locker,
-{
-    fn new() -> Self {
-        Self {
-            job: None,
-            locker: None,
-            err_callback: Box::new(|e| {
-                println!("{:?}", e);
-            }),
-        }
-    }
-}
-
 /// A periodic job used by Scheduler.
-pub struct Job<R, L>
-where
-    R: 'static + Send + Sync,
-    L: 'static + Send + Sync + Locker,
-{
+pub struct Job {
     // pause interval * unit between runs
     call_interval: i32,
     // datetime of next run.
@@ -100,18 +63,15 @@ where
     is_immediately_run: bool,
     // job name or function name.
     job_name: String,
-    job_core: Arc<RwLock<JobArcHandler<R, L>>>,
+    // job_core: Arc<RwLock<JobArcHandler<L>>>,
+    locker: bool,
 }
 
-impl<R, L> Job<R, L>
-where
-    R: 'static + Send + Sync,
-    L: 'static + Send + Sync + Locker,
-{
-    pub(crate) fn new(call_interval: i32, is_at: bool) -> Job<R, L> {
+impl Job {
+    pub(crate) fn new(call_interval: i32, is_at: bool) -> Job {
         let now = Local::now();
         Job {
-            job_core: Arc::new(RwLock::new(JobArcHandler::new())),
+            // job_core: Arc::new(RwLock::new(JobArcHandler::new())),
             call_interval,
             next_run: now,
             last_run: now,
@@ -121,6 +81,7 @@ where
             at_time: None,
             is_at,
             job_name: "".into(),
+            locker: false,
         }
     }
 
@@ -128,53 +89,44 @@ where
         self.job_name.clone()
     }
 
-    pub(crate) async fn set_job<F>(&mut self, f: fn() -> F, unlock: bool)
-    where
-        F: Future<Output = R> + Send + 'static,
-    {
-        if let None = self.time_unit {
-            panic!("must set time unit!");
-        }
-        if self.is_at && self.at_time.is_none() && self.weekday.is_none() {
-            panic!("please set run time of job: day or weekday!");
-        }
-        {
-            let mut job_guard = self.job_core.write().await;
-            if unlock {
-                (*job_guard).locker.as_ref().and_then(|l| {
-                    if let Err(e) = l.unlock(&self.job_name[..]) {
-                        panic!("FAILED TO UNLOCK, {}", e);
-                    };
-                    Some(1)
-                });
-            }
-            (*job_guard).job = Some(Box::new(move || Box::pin(f())));
-        }
-        let job_name = type_name::<F>();
-        let tokens: Vec<&str> = job_name.split("::").collect();
-        match (*tokens).get(tokens.len() - 2) {
-            None => panic!("INVALID JOB NAME: {:?}", tokens),
-            Some(s) => {
-                self.job_name = (*s).into();
-            }
-        };
-        if self.is_immediately_run {
-            self.run().await;
-        }
-        self.schedule_run_time();
+    pub(crate) fn set_name(&mut self, name: String) {
+        self.job_name = name;
     }
 
+    pub(crate) fn need_locker(&mut self) {
+        self.locker = true;
+    }
+
+    pub(crate) fn has_locker(&self) -> bool {
+        self.locker
+    }
+    #[inline]
     pub(crate) fn set_unit(&mut self, unit: TimeUnit) {
         self.time_unit = Some(unit);
     }
 
+    #[inline]
+    pub(crate) fn get_unit(&self) -> Option<&TimeUnit> {
+        self.time_unit.as_ref()
+    }
+
+    #[inline]
     pub(crate) fn get_is_at(&self) -> bool {
         self.is_at
+    }
+
+    pub(crate) fn get_at_time(&self) -> Option<Duration> {
+        self.at_time
     }
 
     #[inline]
     pub(crate) fn immediately_run(&mut self) {
         self.is_immediately_run = true
+    }
+
+    #[inline]
+    pub(crate) fn get_immediately_run(&self) -> bool {
+        self.is_immediately_run
     }
 
     #[inline]
@@ -184,12 +136,6 @@ where
 
     pub(crate) fn set_at_time(&mut self, h: i64, m: i64, s: i64) {
         self.at_time = Some(Duration::hours(h) + Duration::minutes(m) + Duration::seconds(s));
-    }
-
-    #[inline]
-    pub(crate) async fn set_locker(&mut self, locker: L) {
-        let mut job_guard = self.job_core.write().await;
-        (*job_guard).locker = Some(locker);
     }
 
     #[inline]
@@ -204,14 +150,6 @@ where
             7 => Some(Weekday::Sun),
             _ => None,
         };
-    }
-
-    pub(crate) async fn set_err_callback(
-        &mut self,
-        f: Box<dyn Fn(<L as Locker>::Error) + Send + Sync + 'static>,
-    ) {
-        let mut job_guard = self.job_core.write().await;
-        (*job_guard).err_callback = f;
     }
 
     pub(crate) fn get_next_run(&self) -> DateTime<Local> {
@@ -282,63 +220,9 @@ where
             .and_then(|tu| Some(tu.granularity() * self.call_interval))
             .unwrap()
     }
-
-    /// Run job without locking and unlocking.
-    async fn run_without_locker(&self) {
-        let job = self.job_core.clone();
-        tokio::spawn(async move {
-            let job_guard = job.read().await;
-            if let Some(f) = job_guard.job.as_ref() {
-                f().await;
-            }
-        });
-    }
-
-    /// Run job with locking and unlocking.
-    async fn run_with_locker(&self, key: String) {
-        let job = self.job_core.clone();
-
-        tokio::spawn(async move {
-            let job_guard = job.read().await;
-            let f = job_guard.job.as_ref().unwrap();
-            let locker = job_guard.locker.as_ref().unwrap();
-            let callback = &job_guard.err_callback;
-            f().await;
-            if let Err(e) = locker.unlock(&key[..]) {
-                callback(e);
-            };
-        });
-    }
-
-    pub(crate) async fn run(&self) {
-        let job = self.job_core.read().await;
-        let locker = job.locker.as_ref();
-        match locker {
-            Some(locker) => match locker.lock(&self.job_name[..]) {
-                Err(e) => {
-                    let callback = &job.err_callback;
-                    callback(e);
-                }
-                Ok(flag) if flag => {
-                    self.run_with_locker(self.job_name.clone()).await;
-                }
-                _ => {
-                    eprintln!("CAN'T UNLOCK!");
-                    return;
-                }
-            },
-            None => {
-                self.run_without_locker().await;
-            }
-        }
-    }
 }
 
-impl<R, L> fmt::Debug for Job<R, L>
-where
-    R: 'static + Send + Sync,
-    L: 'static + Send + Sync + Locker,
-{
+impl fmt::Debug for Job {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         fmt.debug_struct("Job")
             .field("job_name", &self.job_name)

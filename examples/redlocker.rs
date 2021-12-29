@@ -1,13 +1,18 @@
 extern crate rucron;
 
-use redis::{Client, Commands, RedisError};
-use rucron::locker::Locker;
-use rucron::Scheduler;
-use std::fs::OpenOptions;
-use std::io::prelude::*;
+use redis::{Client, Commands};
+use rucron::{
+    handler::{execute, ArgStorage},
+    locker::Locker,
+    scheduler::Scheduler,
+    EmptyTask,
+};
+
+use std::sync::Arc;
 use tokio::sync::mpsc::channel;
 
 /// Distributed lock implementation with
+#[derive(Clone)]
 struct RedisLocker {
     client: Client,
 }
@@ -21,14 +26,25 @@ impl RedisLocker {
 }
 
 impl Locker for RedisLocker {
-    type Error = RedisError;
-    fn lock(&self, key: &str) -> Result<bool, Self::Error> {
-        let mut con = self.client.get_connection()?;
-        con.set_nx(key, 1)
+    fn lock(&self, key: &str, _storage: Arc<ArgStorage>) -> bool {
+        let mut con = self.client.get_connection().unwrap();
+        match con.set_nx::<&str, i8, bool>(key, 1) {
+            Err(e) => {
+                println!("{:?}", e);
+                false
+            }
+            Ok(_) => true,
+        }
     }
-    fn unlock(&self, key: &str) -> Result<bool, Self::Error> {
-        let mut con = self.client.get_connection()?;
-        con.expire(key, 0)
+    fn unlock(&self, key: &str, _storage: Arc<ArgStorage>) -> bool {
+        let mut con = self.client.get_connection().unwrap();
+        match con.set_nx::<&str, i8, bool>(key, 1) {
+            Err(e) => {
+                println!("{:?}", e);
+                false
+            }
+            Ok(_) => true,
+        }
     }
 }
 
@@ -44,29 +60,13 @@ async fn learn_rust() {
     };
 }
 
-fn err_callback(err: RedisError) {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .append(true)
-        .open("./error.log")
-        .unwrap();
-
-    if let Err(e) = writeln!(file, "{}", err.to_string()) {
-        panic!("couldn't write to log {}", e.to_string())
-    }
-}
-
 #[tokio::main]
 async fn main() {
     let rl = RedisLocker::new();
-    let mut sch = Scheduler::<(), RedisLocker>::new(1, 10);
-    sch.every(10)
-        .await
-        .second()
-        .await
-        .with_opts(true, Some(Box::new(err_callback)), Some(rl))
-        .await
-        .todo(learn_rust)
-        .await;
+    let sch = Scheduler::<EmptyTask, RedisLocker>::new(1, 10);
+    let mut sch = sch.every(10).second().todo(execute(learn_rust)).await;
+    sch.set_locker(rl);
+    // let storage = ArgStorage::new();
+    // sch.set_arg_storage(storage);
     sch.start().await;
 }
