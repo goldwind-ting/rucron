@@ -5,12 +5,12 @@ use std::sync::Arc;
 pub trait Locker {
     /// attempts to get the lock.
     fn lock(&self, key: &str, _storage: Arc<ArgStorage>) -> bool {
-        println!("{}", key);
+        log::info!("[INFO] Key: {}", key);
         true
     }
     /// attempts to release the lock.
     fn unlock(&self, key: &str, _storage: Arc<ArgStorage>) -> bool {
-        println!("{}", key);
+        log::info!("[INFO] Key: {}", key);
         true
     }
 }

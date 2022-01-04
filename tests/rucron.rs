@@ -284,7 +284,7 @@ async fn test_get_job_names() {
         .todo(execute(employee))
         .await;
     sch.set_arg_storage(storage);
-    let names = sch.get_job_names().await;
+    let names = sch.get_job_names();
     assert_eq!(names, vec!["learn_rust", "sing", "cooking", "employee"]);
 }
 
@@ -298,16 +298,13 @@ async fn test_is_scheduled() {
     let mut storage = ArgStorage::new();
     storage.insert(Person { age: 7 });
     sch.set_arg_storage(storage);
-    let now = Local::now();
     assert!(sch.is_scheduled("learn_rust"));
     assert!(sch.is_scheduled("cooking"));
     assert!(sch.is_scheduled("employee"));
     assert_eq!(
         vec!["learn_rust", "cooking", "employee"],
-        sch.get_job_names().await
+        sch.get_job_names()
     );
-    assert_eq!(sch.idle_seconds().unwrap(), now.timestamp() + 2);
-    // sch.start().await;
 }
 
 #[tokio::test]
@@ -447,27 +444,35 @@ async fn test_every_time_unit() {
 }
 
 #[tokio::test]
-async fn test_weekday_with_name(){
+async fn test_weekday_with_name() {
     let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
-    let sch = sch.every(2)
-    .week(1, 0, 59, 59)
-    .todo(execute(learn_rust)).await
-    .every(2)
-    .week(3, 0, 59, 59)
-    .todo(execute(cooking)).await
-    .every(2)
-    .week(5, 0, 59, 59)
-    .todo(execute(employee)).await
-    .every(2)
-    .week(7, 0, 59, 59)
-    .todo(execute(working)).await
-    .every(1).second().todo(execute(sing)).await;
+    let sch = sch
+        .every(2)
+        .week(1, 0, 59, 59)
+        .todo(execute(learn_rust))
+        .await
+        .every(2)
+        .week(3, 0, 59, 59)
+        .todo(execute(cooking))
+        .await
+        .every(2)
+        .week(5, 0, 59, 59)
+        .todo(execute(employee))
+        .await
+        .every(2)
+        .week(7, 0, 59, 59)
+        .todo(execute(working))
+        .await
+        .every(1)
+        .second()
+        .todo(execute(sing))
+        .await;
     assert_eq!(sch.weekday_with_name("learn_rust"), Some(1));
     assert_eq!(sch.weekday_with_name("cooking"), Some(3));
     assert_eq!(sch.weekday_with_name("employee"), Some(5));
     assert_eq!(sch.weekday_with_name("working"), Some(7));
     assert_eq!(sch.weekday_with_name("sing"), None);
-} 
+}
 
 #[tokio::test]
 async fn test_at_time_unit() {

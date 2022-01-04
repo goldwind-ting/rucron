@@ -33,6 +33,9 @@ pub trait JobHandler: Send + Sized + 'static {
     async fn call(&self, args: Arc<ArgStorage>, name: String);
     fn name(&self) -> String;
 }
+
+/// Implement the trait to parse or get arguments from [`ArgStorage`]. The [`Scheduler`] will call `parse_args` when runs job
+/// and pass arguments to `job`.
 #[async_trait]
 pub trait ParseArgs: Sized + Clone {
     type Err: Error;
@@ -53,7 +56,10 @@ macro_rules! impl_Executor {
                 $(
                     let $ty = match $ty::parse_args(args).await {
                         Ok(value) => value,
-                        Err(_) => return,
+                        Err(e) => {
+                            log::error!("[ERROR] Cann't parse argument from ArgStorage, error: {}", e);
+                            return
+                        },
                     };
                 )*
                 self($($ty,)*).await;
@@ -100,21 +106,34 @@ where
             let task = self.task.clone();
             if self.need_lock && self.locker.is_some() {
                 let locker = self.locker.clone();
-                if locker.as_ref().unwrap().lock(&name[..], args.clone()) {
-                    tokio::spawn(async move {
-                        JobHandler::call(&task, args.clone(), name.clone()).await;
-                        locker.unwrap().unlock(&name[..], args);
-                    });
-                }
+                match locker {
+                    Some(locker) => {
+                        if locker.lock(&name[..], args.clone()) {
+                            log::debug!("[DEBUG] Spawns a new asynchronous task to run: {}", &name[..]);
+                            tokio::spawn(async move {
+                                JobHandler::call(&task, args.clone(), name.clone()).await;
+                                log::debug!("[DEBUG] Had finished running: {}", &name[..]);
+                                if !locker.unlock(&name[..], args) {
+                                    log::warn!("[WARN] Cann't unlock: {}!", &name[..]);
+                                };
+                            });
+                        } else {
+                            log::warn!("[WARN] Cann't get lock: {}!", &name[..]);
+                        }
+                    }
+                    _ => {}
+                };
                 {
                     // todo: metric
                 };
             } else if !self.need_lock {
+                log::debug!("[DEBUG] Spawns a new asynchronous task to run: {}", &name[..]);
                 tokio::spawn(async move {
-                    JobHandler::call(&task, args, name).await;
+                    JobHandler::call(&task, args, name.clone()).await;
+                    log::debug!("[DEBUG] Had finished running: {}", name);
                 });
             } else {
-                log::warn!("[WARN] PLEASE CONFIG LOKER FOR {}!", self.name);
+                log::warn!("[WARN] Please config locker for {}!", self.name);
             }
             return;
         } else {
@@ -140,7 +159,7 @@ where
     let tname = type_name::<E>();
     let tokens: Vec<&str> = tname.split("::").collect();
     let name = match (*tokens).get(tokens.len() - 1) {
-        None => panic!("INVALID NAME: {:?}", tokens),
+        None => panic!("Invalid name: {:?}", tokens),
         Some(s) => (*s).into(),
     };
     ExecutorWrapper {
@@ -165,6 +184,38 @@ where
     }
 }
 
+/// The storage of arguments, which stores all the arguments [`jobs`] needed.
+/// 
+/// # Examples
+/// 
+/// ```
+/// use rucron::{Scheduler, EmptyTask, execute, ArgStorage, ParseArgs};
+/// use async_trait::async_trait;
+///
+///
+/// #[derive(Clone)]
+/// struct Person {
+///     age: i32,
+/// }
+/// 
+/// #[async_trait]
+/// impl ParseArgs for Person {
+///     type Err = std::io::Error;
+///     async fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err> {
+///         return Ok(args.get::<Person>().unwrap().clone());
+///     }
+/// }
+/// async fn say_age(p: Person) {
+///     println!("I am {} years old", p.age);
+/// }
+/// 
+/// #[tokio::main]
+/// async fn main(){
+///     let sch = Scheduler::<EmptyTask, ()>::new(2, 10);
+///     let sch = sch.every(2).second().immediately_run().todo(execute(say_age)).await;
+///     assert!(sch.is_scheduled("say_age"));
+/// }
+/// ```
 #[derive(Debug)]
 pub struct ArgStorage(Extensions);
 
