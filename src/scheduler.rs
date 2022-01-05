@@ -1,6 +1,8 @@
 use crate::handler::{ArgStorage, JobHandler, Task};
 use crate::job::{Job, TimeUnit};
-use crate::locker::Locker;
+use crate::{
+    locker::Locker, metric::Metric, unlock_and_record, DEFAULT_ZERO_CALL_INTERVAL, METRIC_STORAGE,
+};
 
 use std::{fmt, sync::Arc};
 use tokio::sync::{mpsc::channel, RwLock};
@@ -14,10 +16,6 @@ use signal_hook::consts::SIGINT;
 #[cfg(not(windows))]
 use signal_hook::consts::SIGTSTP; // catch ctrl + z signal
 use std::sync::atomic::{AtomicBool, Ordering};
-
-lazy_static! {
-    static ref DEFAULT_ZERO_CALL_INTERVAL: Duration = Duration::from_secs(1);
-}
 
 /// `Scheduler` strores all jobs and number of jobs.
 pub struct Scheduler<T, L>
@@ -128,10 +126,12 @@ where
     ///
     /// ```
     /// use rucron::{Scheduler, EmptyTask, execute};
+    /// use std::error::Error;
     ///
     ///
-    /// async fn foo(){
+    /// async fn foo() -> Result<(), Box<dyn Error>> {
     ///     println!("foo");
+    ///     Ok(())
     /// }
     ///
     /// #[tokio::main]
@@ -188,14 +188,16 @@ where
     ///
     /// ```
     /// use rucron::{Scheduler, EmptyTask, execute};
+    /// use std::error::Error;
     ///
     ///
-    /// async fn foo(){
-    ///     println!("foo");
+    /// async fn foo() -> Result<(), Box<dyn Error>> {
+    ///     println!("foo"); Ok(())
     /// }
     ///
-    /// async fn bar(){
+    /// async fn bar() -> Result<(), Box<dyn Error>> {
     ///     println!("bar");
+    ///     Ok(())
     /// }
     ///
     /// #[tokio::main]
@@ -226,14 +228,17 @@ where
     /// ```
     /// use rucron::{Scheduler, EmptyTask, execute};
     /// use chrono::Local;
+    /// use std::error::Error;
     ///
     ///
-    /// async fn foo(){
+    /// async fn foo() -> Result<(), Box<dyn Error>> {
     ///     println!("foo");
+    ///     Ok(())
     /// }
     ///
-    /// async fn bar(){
+    /// async fn bar() -> Result<(), Box<dyn Error>> {
     ///     println!("bar");
+    ///     Ok(())
     /// }
     ///
     /// #[tokio::main]
@@ -272,10 +277,12 @@ where
     /// ```
     /// use rucron::{Scheduler, EmptyTask, execute};
     /// use  chrono::{Local, Datelike, Timelike};
+    /// use std::error::Error;
     ///
     ///
-    /// async fn foo(){
+    /// async fn foo() -> Result<(), Box<dyn Error>> {
     ///     println!("foo");
+    ///     Ok(())
     /// }
     ///
     /// #[tokio::main]
@@ -300,10 +307,12 @@ where
     /// ```
     /// use rucron::{Scheduler, EmptyTask, execute};
     /// use  chrono::{Local, Datelike, Timelike};
+    /// use std::error::Error;
     ///
     ///
-    /// async fn foo(){
+    /// async fn foo() -> Result<(), Box<dyn Error>> {
     ///     println!("foo");
+    ///     Ok(())
     /// }
     ///
     /// #[tokio::main]
@@ -341,24 +350,20 @@ where
 
     pub fn with_unlock(self) -> Self {
         {
-            let name = self
-                .jobs
+            self.jobs
                 .try_write()
-                .and_then(|guard| {
-                    Ok(guard.get(self.size - 1).map_or_else(
+                .and_then(|mut guard| {
+                    Ok(guard.get_mut(self.size - 1).map_or_else(
                         || {
                             panic!(
                                 "Cann't get the job in [with_unlock], index: {}",
                                 self.size - 1
                             )
                         },
-                        |job| job.get_job_name(),
+                        |job| job.need_unlock_before_start(),
                     ))
                 })
                 .expect("Cann't get write lock in [with_unlock]");
-            self.locker
-                .clone()
-                .and_then(|l| Some(l.unlock(&name[..], self.arg_storage.clone().unwrap())));
         }
         self
     }
@@ -373,10 +378,12 @@ where
     ///
     /// ```
     /// use rucron::{Scheduler, EmptyTask, execute};
+    /// use std::error::Error;
     ///
     ///
-    /// async fn foo(){
+    /// async fn foo() -> Result<(), Box<dyn Error>> {
     ///     println!("foo");
+    ///     Ok(())
     /// }
     ///
     ///
@@ -422,10 +429,12 @@ where
     ///
     /// ```
     /// use rucron::{Scheduler, EmptyTask, execute};
+    /// use std::error::Error;
     ///
     ///
-    /// async fn foo(){
+    /// async fn foo() -> Result<(), Box<dyn Error>> {
     ///     println!("foo");
+    ///     Ok(())
     /// }
     ///
     /// #[tokio::main]
@@ -470,10 +479,12 @@ where
     ///
     /// ```
     /// use rucron::{Scheduler, EmptyTask, execute};
+    /// use std::error::Error;
     ///
     ///
-    /// async fn foo(){
+    /// async fn foo() -> Result<(), Box<dyn Error>> {
     ///     println!("foo");
+    ///     Ok(())
     /// }
     ///
     /// #[tokio::main]
@@ -521,10 +532,12 @@ where
     ///
     /// ```
     /// use rucron::{Scheduler, EmptyTask, execute};
+    /// use std::error::Error;
     ///
     ///
-    /// async fn foo(){
+    /// async fn foo() -> Result<(), Box<dyn Error>> {
     ///     println!("foo");
+    ///     Ok(())
     /// }
     ///
     /// #[tokio::main]
@@ -564,10 +577,12 @@ where
     ///
     /// ```
     /// use rucron::{Scheduler, EmptyTask, execute};
+    /// use std::error::Error;
     ///
     ///
-    /// async fn foo(){
+    /// async fn foo() -> Result<(), Box<dyn Error>> {
     ///     println!("foo");
+    ///     Ok(())
     /// }
     ///
     /// #[tokio::main]
@@ -598,6 +613,27 @@ where
         self
     }
 
+    fn schedule_and_set_name(&self, name: String) {
+        self.jobs.try_write().map_or_else(
+            |_| panic!(),
+            |mut guard| {
+                guard.get_mut(self.size - 1).map_or_else(
+                    || {
+                        panic!(
+                            "Cann't get write lock in [todo], job index: {}",
+                            self.size - 1
+                        )
+                    },
+                    |job| {
+                        METRIC_STORAGE.insert(name.clone(), Metric::default());
+                        job.set_name(name.clone());
+                        job.schedule_run_time();
+                    },
+                );
+            },
+        );
+    }
+
     /// Config function to be executed for `job`.
     ///
     /// # Panics
@@ -608,14 +644,17 @@ where
     ///
     /// ```
     /// use rucron::{Scheduler, EmptyTask, execute};
+    /// use std::error::Error;
     ///
     ///
-    /// async fn foo(){
+    /// async fn foo() -> Result<(), Box<dyn Error>> {
     ///     println!("foo");
+    ///     Ok(())
     /// }
     ///
-    /// async fn bar(){
+    /// async fn bar() -> Result<(), Box<dyn Error>> {
     ///     println!("bar");
+    ///     Ok(())
     /// }
     ///
     /// #[tokio::main]
@@ -630,22 +669,9 @@ where
         task: T,
     ) -> Scheduler<Task<T, TH, L>, L> {
         let name = task.name();
-        {
-            let mut guard = self.jobs.write().await;
-            guard.get_mut(self.size - 1).map_or_else(
-                || {
-                    panic!(
-                        "Cann't get write lock in [todo], job index: {}",
-                        self.size - 1
-                    )
-                },
-                |job| {
-                    job.set_name(name.clone());
-                    job.schedule_run_time();
-                },
-            );
-        }
+        self.schedule_and_set_name(name.clone());
         let need_lock: bool;
+        let need_unlock: bool;
         {
             let guard = self.jobs.read().await;
             let cur_job = guard.get(self.size - 1).unwrap();
@@ -653,6 +679,10 @@ where
                 panic!("Must set time unit!");
             }
             need_lock = cur_job.has_locker();
+            need_unlock = cur_job.is_need_unlock();
+            if (need_lock || need_unlock) && self.locker.is_none() {
+                panic!("Please set locker!");
+            }
             if cur_job.get_is_at()
                 && cur_job.get_at_time().is_none()
                 && cur_job.get_weekday().is_none()
@@ -661,9 +691,14 @@ where
             }
             if cur_job.get_immediately_run() {
                 let cur_task = task.clone();
-                let arg = self.arg_storage.clone().unwrap();
+                let args = self.arg_storage.clone().unwrap();
+                let locker = self.locker.clone();
+                let key = cur_job.get_job_name();
                 tokio::spawn(async move {
-                    JobHandler::call(&cur_task, arg, name).await;
+                    if need_unlock {
+                        unlock_and_record(locker.unwrap(), &key, args.clone());
+                    }
+                    JobHandler::call(&cur_task, args, name).await;
                 });
             }
         }
@@ -682,14 +717,17 @@ where
     ///
     /// ```
     /// use rucron::{Scheduler, EmptyTask, execute};
+    /// use std::error::Error;
     ///
     ///
-    /// async fn foo(){
+    /// async fn foo() -> Result<(), Box<dyn Error>> {
     ///     println!("foo");
+    ///     Ok(())
     /// }
     ///
-    /// async fn bar(){
+    /// async fn bar() -> Result<(), Box<dyn Error>> {
     ///     println!("bar");
+    ///     Ok(())
     /// }
     ///
     /// #[tokio::main]
@@ -724,10 +762,12 @@ where
     /// ```
     /// use rucron::{Scheduler, EmptyTask, execute};
     /// use chrono::Local;
+    /// use std::error::Error;
     ///
     ///
-    /// async fn foo(){
+    /// async fn foo() -> Result<(), Box<dyn Error>> {
     ///     println!("foo");
+    ///     Ok(())
     /// }
     ///
     /// #[tokio::main]
@@ -760,10 +800,12 @@ where
     ///
     /// ```
     /// use rucron::{Scheduler, EmptyTask, execute};
+    /// use std::error::Error;
     ///
     ///
-    /// async fn foo(){
+    /// async fn foo() -> Result<(), Box<dyn Error>> {
     ///     println!("foo");
+    ///     Ok(())
     /// }
     ///
     ///
@@ -795,10 +837,12 @@ where
     /// ```
     /// use rucron::{Scheduler, EmptyTask, execute};
     /// use chrono::Local;
+    /// use std::error::Error;
     ///
     ///
-    /// async fn foo(){
+    /// async fn foo() -> Result<(), Box<dyn Error>> {
     ///     println!("foo");
+    ///     Ok(())
     /// }
     ///
     /// #[tokio::main]
@@ -830,10 +874,12 @@ where
     /// ```
     /// use rucron::{Scheduler, EmptyTask, execute};
     /// use chrono::Local;
+    /// use std::error::Error;
     ///
     ///
-    /// async fn foo(){
+    /// async fn foo() -> Result<(), Box<dyn Error>> {
     ///     println!("foo");
+    ///     Ok(())
     /// }
     ///
     /// #[tokio::main]
@@ -864,14 +910,17 @@ where
     ///
     /// ```
     /// use rucron::{Scheduler, EmptyTask, execute};
+    /// use std::error::Error;
     ///
     ///
-    /// async fn foo(){
+    /// async fn foo() -> Result<(), Box<dyn Error>> {
     ///     println!("foo");
+    ///     Ok(())
     /// }
     ///
-    /// async fn bar(){
+    /// async fn bar() -> Result<(), Box<dyn Error>> {
     ///     println!("bar");
+    ///     Ok(())
     /// }
     ///
     /// #[tokio::main]
@@ -918,7 +967,7 @@ where
 
     /// Start scheduler and run all jobs,  
     ///
-    /// The scheduler will spawn a asynchronous task for each *runable* job to execute the job, and
+    /// The scheduler will spawn a asynchronous task for each *runnable* job to execute the job, and
     /// The program will stop if it catches `SIGTSTP` signal in linux or `SIGINT` signal in windows.
     ///
     /// # Examples
@@ -926,14 +975,17 @@ where
     /// ```
     /// use rucron::{Scheduler, EmptyTask, execute};
     /// use chrono::Local;
+    /// use std::error::Error;
     ///
     ///
-    /// async fn foo(){
+    /// async fn foo() -> Result<(), Box<dyn Error>> {
     ///     println!("foo");
+    ///     Ok(())
     /// }
     ///
-    /// async fn bar(){
+    /// async fn bar() -> Result<(), Box<dyn Error>> {
     ///     println!("bar");
+    ///     Ok(())
     /// }
     ///
     /// #[tokio::main]
@@ -958,10 +1010,11 @@ where
         }
         {
             #[cfg(windows)]
-            let _ = signal_hook::flag::register(SIGINT, Arc::clone(&term)).map_err(|e| {
-                panic!("Cann't register signal: {}", e);
-            }).map(|_|log::info!("[INFO] Have registered [SIGTSTP] signal!"));
-            
+            let _ = signal_hook::flag::register(SIGINT, Arc::clone(&term))
+                .map_err(|e| {
+                    panic!("Cann't register signal: {}", e);
+                })
+                .map(|_| log::info!("[INFO] Have registered [SIGTSTP] signal!"));
         }
         let send_trigger = tokio::spawn(async move {
             while !term.load(Ordering::Relaxed) {
@@ -994,7 +1047,7 @@ where
                     {
                         let guard = jobs_loop.read().await;
                         for (ind, job) in guard.iter().enumerate(){
-                            if job.runable(){
+                            if job.runnable(){
                                 size = (ind + 1) as i64;
                             }else{
                                 break;

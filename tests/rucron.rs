@@ -1,13 +1,8 @@
 use async_trait::async_trait;
 use chrono::{Datelike, Local, Timelike};
-use rucron::{
-    execute,
-    handler::{ArgStorage, JobHandler},
-    locker::Locker,
-    scheduler::{EmptyTask, Scheduler},
-    ParseArgs,
-};
-use std::sync::Arc;
+use rucron::handler::JobHandler;
+use rucron::{execute, ArgStorage, EmptyTask, Locker, ParseArgs, RucronError, Scheduler};
+use std::{error::Error, sync::Arc};
 use tokio::sync::{
     mpsc::{channel, Sender},
     RwLock,
@@ -33,7 +28,7 @@ lazy_static! {
 
 macro_rules! interval_job {
     ($fn_name:ident, $t:expr, $times:expr) => {
-        async fn $fn_name() {
+        async fn $fn_name() -> Result<(), Box<dyn Error>> {
             let now = Local::now().timestamp();
             {
                 let mut guard = $t.write().await;
@@ -46,6 +41,7 @@ macro_rules! interval_job {
                     let _ = tx.as_ref().unwrap().send(true).await.unwrap();
                 }
             }
+            Ok(())
         }
     };
 }
@@ -54,33 +50,33 @@ macro_rules! interval_job {
 struct RedisLockerOk;
 
 impl Locker for RedisLockerOk {
-    fn lock(&self, _key: &str, _storage: Arc<ArgStorage>) -> bool {
-        true
+    fn lock(&self, _key: &str, _storage: Arc<ArgStorage>) -> Result<bool, RucronError> {
+        Ok(true)
     }
-    fn unlock(&self, _key: &str, _storage: Arc<ArgStorage>) -> bool {
-        true
+    fn unlock(&self, _key: &str, _storage: Arc<ArgStorage>) -> Result<bool, RucronError> {
+        Ok(true)
     }
 }
 
 struct LockedLocker;
 
 impl Locker for LockedLocker {
-    fn lock(&self, _key: &str, _storage: Arc<ArgStorage>) -> bool {
+    fn lock(&self, _key: &str, _storage: Arc<ArgStorage>) -> Result<bool, RucronError> {
         let mut guard = LOCKED_FLAG.try_write().unwrap();
         if *guard {
             *guard = !*guard;
-            return true;
+            return Ok(true);
         }
-        false
+        Ok(false)
     }
-    fn unlock(&self, _key: &str, _storage: Arc<ArgStorage>) -> bool {
+    fn unlock(&self, _key: &str, _storage: Arc<ArgStorage>) -> Result<bool, RucronError> {
         let mut guard = LOCKED_FLAG.try_write().unwrap();
         println!("unlock {}", guard);
         if !*guard {
             *guard = !*guard;
-            return true;
+            return Ok(true);
         }
-        false
+        Ok(false)
     }
 }
 
@@ -88,26 +84,29 @@ impl Locker for LockedLocker {
 struct RedisLockerFlase;
 
 impl Locker for RedisLockerFlase {
-    fn lock(&self, _key: &str, _storage: Arc<ArgStorage>) -> bool {
-        false
+    fn lock(&self, _key: &str, _storage: Arc<ArgStorage>) -> Result<bool, RucronError> {
+        Ok(false)
     }
-    fn unlock(&self, _key: &str, _storage: Arc<ArgStorage>) -> bool {
-        false
+    fn unlock(&self, _key: &str, _storage: Arc<ArgStorage>) -> Result<bool, RucronError> {
+        Ok(false)
     }
 }
 
-async fn learn_rust() {
+async fn learn_rust() -> Result<(), Box<dyn Error>> {
     sleep(Duration::from_secs(1)).await;
     println!("I am learning rust!");
+    Ok(())
 }
 
-async fn sing() {
+async fn sing() -> Result<(), Box<dyn Error>> {
     println!("I am singing!");
+    Ok(())
 }
 
-async fn cooking() {
+async fn cooking() -> Result<(), Box<dyn Error>> {
     sleep(Duration::from_secs(1)).await;
     println!("I am cooking!");
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -123,20 +122,23 @@ impl ParseArgs for Person {
     }
 }
 
-async fn employee(p: Person) {
+async fn employee(p: Person) -> Result<(), Box<dyn Error>> {
     sleep(Duration::from_secs(1)).await;
     println!("I am {} years old", p.age);
+    Ok(())
 }
 
-async fn working() {
+async fn working() -> Result<(), Box<dyn Error>> {
     println!("I am working!");
+    Ok(())
 }
 
-async fn is_eight_years_old(p: Person) {
+async fn is_eight_years_old(p: Person) -> Result<(), Box<dyn Error>> {
     if p.age != 8 {
         let mut guard = EIGHT.write().await;
         *guard = 8;
     };
+    Ok(())
 }
 
 async fn start_scheldure<
@@ -658,14 +660,17 @@ async fn test_is_at() {
     sch.at().second().at().minute().at().hour();
 }
 
-async fn panic_job() {
+async fn panic_job() -> Result<(), Box<dyn Error>> {
     let mut guard = LOCKED_FLAG.try_write().unwrap();
     *guard = !*guard;
+    Ok(())
 }
 
 #[tokio::test]
 async fn test_start_with_unlock() {
-    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    let mut sch = Scheduler::<EmptyTask, RedisLockerOk>::new(1, 10);
+    let rl = RedisLockerOk;
+    sch.set_locker(rl);
     let sch = sch
         .every(2)
         .second()

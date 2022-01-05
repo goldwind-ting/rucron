@@ -1,6 +1,9 @@
-use crate::locker::Locker;
+use crate::{
+    error::RucronError, locker::Locker, metric::NumberType, unlock_and_record, METRIC_STORAGE,
+};
 
 use async_trait::async_trait;
+use chrono::Local;
 use futures::future::Future;
 use http::Extensions;
 use std::{
@@ -14,17 +17,19 @@ use std::{
 
 #[async_trait]
 pub trait Executor<T>: Send + Sized + 'static {
-    async fn call(&self, args: &ArgStorage);
+    async fn call(&self, args: &ArgStorage) -> Result<(), RucronError>;
 }
 
 #[async_trait]
 impl<F, Fut> Executor<()> for F
 where
     F: Fn() -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = ()> + Send + 'static,
+    Fut: Future<Output = Result<(), Box<dyn Error>>> + Send + 'static,
 {
-    async fn call(&self, _args: &ArgStorage) {
-        self().await;
+    async fn call(&self, _args: &ArgStorage) -> Result<(), RucronError> {
+        self()
+            .await
+            .map_err(|e| RucronError::RunTimeError(e.to_string()))
     }
 }
 
@@ -34,8 +39,8 @@ pub trait JobHandler: Send + Sized + 'static {
     fn name(&self) -> String;
 }
 
-/// Implement the trait to parse or get arguments from [`ArgStorage`]. The [`Scheduler`] will call `parse_args` when runs job
-/// and pass arguments to `job`.
+/// Implement the trait to parse or get arguments from [`ArgStorage`]. The [`Scheduler`] will call `parse_args` and pass arguments to `job`
+///  when run job.
 #[async_trait]
 pub trait ParseArgs: Sized + Clone {
     type Err: Error;
@@ -49,20 +54,19 @@ macro_rules! impl_Executor {
         impl<F, Fut, $($ty,)*> Executor<($($ty,)*)> for F
         where
             F: Fn($($ty,)*) -> Fut + Clone + Send + Sync + 'static,
-            Fut: Future<Output = ()> + Send,
+            Fut: Future<Output = Result<(), Box<dyn Error>>> + Send,
             $($ty: ParseArgs + Send,)*
         {
-            async fn call(&self, args:&ArgStorage){
+            async fn call(&self, args:&ArgStorage) -> Result<(), RucronError> {
                 $(
                     let $ty = match $ty::parse_args(args).await {
                         Ok(value) => value,
                         Err(e) => {
-                            log::error!("[ERROR] Cann't parse argument from ArgStorage, error: {}", e);
-                            return
+                            return Err(RucronError::ParseArgsError(e.to_string()))
                         },
                     };
                 )*
-                self($($ty,)*).await;
+                self($($ty,)*).await.map_err(|e|RucronError::RunTimeError(e.to_string()))
             }
         }
     };
@@ -107,34 +111,45 @@ where
             if self.need_lock && self.locker.is_some() {
                 let locker = self.locker.clone();
                 match locker {
-                    Some(locker) => {
-                        if locker.lock(&name[..], args.clone()) {
-                            log::debug!("[DEBUG] Spawns a new asynchronous task to run: {}", &name[..]);
+                    Some(locker) => match locker.lock(&name[..], args.clone()) {
+                        Ok(b) if b => {
+                            log::debug!(
+                                "[DEBUG] Spawns a new asynchronous task to run: {}",
+                                &name[..]
+                            );
                             tokio::spawn(async move {
                                 JobHandler::call(&task, args.clone(), name.clone()).await;
                                 log::debug!("[DEBUG] Had finished running: {}", &name[..]);
-                                if !locker.unlock(&name[..], args) {
-                                    log::warn!("[WARN] Cann't unlock: {}!", &name[..]);
-                                };
+                                unlock_and_record(locker, &name[..], args);
                             });
-                        } else {
-                            log::warn!("[WARN] Cann't get lock: {}!", &name[..]);
                         }
-                    }
+                        Ok(b) if !b => METRIC_STORAGE
+                            .get(&self.name())
+                            .unwrap()
+                            .add_failure(NumberType::Lock),
+                        Ok(_) => {
+                            unreachable!("unreachable!")
+                        }
+                        Err(e) => {
+                            log::error!("{}", e);
+                            METRIC_STORAGE
+                                .get(&self.name())
+                                .unwrap()
+                                .add_failure(NumberType::Error)
+                        }
+                    },
                     _ => {}
                 };
-                {
-                    // todo: metric
-                };
             } else if !self.need_lock {
-                log::debug!("[DEBUG] Spawns a new asynchronous task to run: {}", &name[..]);
+                log::debug!(
+                    "[DEBUG] Spawns a new asynchronous task to run: {}",
+                    &name[..]
+                );
                 tokio::spawn(async move {
                     JobHandler::call(&task, args, name.clone()).await;
                     log::debug!("[DEBUG] Had finished running: {}", name);
                 });
-            } else {
-                log::warn!("[WARN] Please config locker for {}!", self.name);
-            }
+            };
             return;
         } else {
             JobHandler::call(&self.fallback, args, name).await;
@@ -176,7 +191,24 @@ where
     T: Send + 'static + Sync,
 {
     async fn call(&self, args: Arc<ArgStorage>, _name: String) {
-        Executor::call(&self.executor, &*args).await;
+        let start = Local::now();
+        Executor::call(&self.executor, &*args).await.map_or_else(
+            |e| {
+                log::error!("{}", e);
+                METRIC_STORAGE
+                    .get(&self.name())
+                    .unwrap()
+                    .add_failure(NumberType::Error)
+            },
+            |_| {
+                METRIC_STORAGE
+                    .get(&self.name())
+                    .unwrap()
+                    .swap_time_and_add_runs(
+                        Local::now().signed_duration_since(start).num_seconds() as usize
+                    )
+            },
+        );
     }
 
     fn name(&self) -> String {
@@ -185,19 +217,20 @@ where
 }
 
 /// The storage of arguments, which stores all the arguments [`jobs`] needed.
-/// 
+///
 /// # Examples
-/// 
+///
 /// ```
 /// use rucron::{Scheduler, EmptyTask, execute, ArgStorage, ParseArgs};
 /// use async_trait::async_trait;
+/// use std::error::Error;
 ///
 ///
 /// #[derive(Clone)]
 /// struct Person {
 ///     age: i32,
 /// }
-/// 
+///
 /// #[async_trait]
 /// impl ParseArgs for Person {
 ///     type Err = std::io::Error;
@@ -205,10 +238,11 @@ where
 ///         return Ok(args.get::<Person>().unwrap().clone());
 ///     }
 /// }
-/// async fn say_age(p: Person) {
+/// async fn say_age(p: Person) -> Result<(), Box<dyn Error>>  {
 ///     println!("I am {} years old", p.age);
+///     Ok(())
 /// }
-/// 
+///
 /// #[tokio::main]
 /// async fn main(){
 ///     let sch = Scheduler::<EmptyTask, ()>::new(2, 10);

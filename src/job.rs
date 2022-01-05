@@ -11,6 +11,7 @@ pub(crate) enum TimeUnit {
 }
 
 impl TimeUnit {
+    #[inline]
     fn granularity(&self) -> Duration {
         match self {
             Self::Second => Duration::seconds(1),
@@ -20,6 +21,7 @@ impl TimeUnit {
             Self::Week => Duration::weeks(1),
         }
     }
+    #[inline]
     fn number_from_zero(&self) -> i8 {
         match self {
             Self::Second => 0,
@@ -65,6 +67,7 @@ pub struct Job {
     job_name: String,
     // job_core: Arc<RwLock<JobArcHandler<L>>>,
     locker: bool,
+    unlock_before_start: bool,
 }
 
 impl Job {
@@ -82,21 +85,36 @@ impl Job {
             is_at,
             job_name: "".into(),
             locker: false,
+            unlock_before_start: false,
         }
     }
 
+    #[inline]
+    pub(crate) fn is_need_unlock(&self) -> bool {
+        self.unlock_before_start
+    }
+
+    #[inline]
+    pub(crate) fn need_unlock_before_start(&mut self) {
+        self.unlock_before_start = true;
+    }
+
+    #[inline]
     pub(crate) fn get_job_name(&self) -> String {
         self.job_name.clone()
     }
 
+    #[inline]
     pub(crate) fn set_name(&mut self, name: String) {
         self.job_name = name;
     }
 
+    #[inline]
     pub(crate) fn need_locker(&mut self) {
         self.locker = true;
     }
 
+    #[inline]
     pub(crate) fn has_locker(&self) -> bool {
         self.locker
     }
@@ -115,6 +133,7 @@ impl Job {
         self.is_at
     }
 
+    #[inline]
     pub(crate) fn get_at_time(&self) -> Option<Duration> {
         self.at_time
     }
@@ -130,10 +149,11 @@ impl Job {
     }
 
     #[inline]
-    pub(crate) fn runable(&self) -> bool {
+    pub(crate) fn runnable(&self) -> bool {
         self.next_run.le(&Local::now())
     }
 
+    #[inline]
     pub(crate) fn set_at_time(&mut self, h: i64, m: i64, s: i64) {
         self.at_time = Some(Duration::hours(h) + Duration::minutes(m) + Duration::seconds(s));
     }
@@ -152,6 +172,7 @@ impl Job {
         };
     }
 
+    #[inline]
     pub(crate) fn get_next_run(&self) -> DateTime<Local> {
         self.next_run
     }
@@ -166,6 +187,7 @@ impl Job {
         self.weekday
     }
 
+    #[inline]
     pub(crate) fn get_time_unit(&self) -> Option<i8> {
         self.time_unit
             .as_ref()
@@ -214,6 +236,7 @@ impl Job {
         }
     }
 
+    #[inline]
     fn cmp_time_granularity(&self) -> Duration {
         self.time_unit
             .as_ref()
@@ -234,6 +257,8 @@ impl fmt::Debug for Job {
             .field("last_run", &self.last_run)
             .field("next_run", &self.next_run)
             .field("call_interval", &self.call_interval)
+            .field("unlock_before_start", &self.unlock_before_start)
+            .field("locker", &self.locker)
             .finish()
     }
 }
