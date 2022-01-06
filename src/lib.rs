@@ -10,9 +10,10 @@ extern crate lazy_static;
 pub use crate::error::RucronError;
 pub use crate::handler::{execute, ArgStorage, Executor, ParseArgs};
 pub use crate::locker::Locker;
+pub use crate::metric::Metric;
 pub use crate::scheduler::{EmptyTask, Scheduler};
 
-use crate::metric::{Metric, NumberType};
+use crate::metric::NumberType;
 use dashmap::DashMap;
 use serde_json;
 use std::sync::Arc;
@@ -36,7 +37,6 @@ pub(crate) fn unlock_and_record<L: Locker>(locker: L, key: &str, args: Arc<ArgSt
             .add_failure(NumberType::Unlock),
         Ok(_) => {}
         Err(e) => {
-            println!("unlock error");
             log::error!("{}", e);
             METRIC_STORAGE
                 .get(key)

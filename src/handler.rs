@@ -145,10 +145,15 @@ where
                     "[DEBUG] Spawns a new asynchronous task to run: {}",
                     &name[..]
                 );
-                tokio::spawn(async move {
-                    JobHandler::call(&task, args, name.clone()).await;
-                    log::debug!("[DEBUG] Had finished running: {}", name);
-                });
+                for _ in (0..3).into_iter() {
+                    let name_copy = name.clone();
+                    let task_copy = task.clone();
+                    let args_copy = args.clone();
+                    tokio::spawn(async move {
+                        JobHandler::call(&task_copy, args_copy, name_copy.clone()).await;
+                        log::debug!("[DEBUG] Had finished running: {}", name_copy);
+                    });
+                }
             };
             return;
         } else {

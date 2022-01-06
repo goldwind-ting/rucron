@@ -4,6 +4,7 @@ use crate::{
     locker::Locker, metric::Metric, unlock_and_record, DEFAULT_ZERO_CALL_INTERVAL, METRIC_STORAGE,
 };
 
+use chrono::{DateTime, Duration as duration, Local};
 use std::{fmt, sync::Arc};
 use tokio::sync::{mpsc::channel, RwLock};
 use tokio::time::{self, sleep, Duration, Interval};
@@ -14,7 +15,7 @@ use async_trait::async_trait;
 use signal_hook::consts::{SIGINT, SIGTERM};
 
 #[cfg(not(windows))]
-use signal_hook::consts::TERM_SIGNALS; 
+use signal_hook::consts::TERM_SIGNALS;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// `Scheduler` strores all jobs and number of jobs.
@@ -329,6 +330,13 @@ where
     /// ```
     pub fn at(mut self) -> Self {
         let job = Job::new(1, true);
+        self.insert_job(job);
+        self
+    }
+
+    pub fn by(mut self, f: fn(&Metric, &DateTime<Local>) -> duration) -> Self {
+        let mut job = Job::new(0, false);
+        job.set_interval_fn(f);
         self.insert_job(job);
         self
     }
@@ -654,7 +662,7 @@ where
         {
             let guard = self.jobs.read().await;
             let cur_job = guard.get(self.size - 1).unwrap();
-            if let None = cur_job.get_unit() {
+            if cur_job.get_unit().is_none() && !cur_job.has_interval_fn() {
                 panic!("Must set time unit!");
             }
             need_lock = cur_job.is_need_lock();
@@ -938,19 +946,24 @@ where
         }
     }
 
-    fn drop(&self){
-        self.jobs
-            .try_read()
-            .map_or_else(|e|{
+    fn drop(&self) {
+        self.jobs.try_read().map_or_else(
+            |e| {
                 panic!("Cann't get read lock in [drop], error: {}", e);
-            },|guard| {
-                guard.iter().for_each(|job|{
-                    if job.is_need_lock(){
+            },
+            |guard| {
+                guard.iter().for_each(|job| {
+                    if job.is_need_lock() {
                         let name = job.get_job_name();
-                        unlock_and_record(self.locker.clone().unwrap(), &name, self.arg_storage.clone().unwrap())
+                        unlock_and_record(
+                            self.locker.clone().unwrap(),
+                            &name,
+                            self.arg_storage.clone().unwrap(),
+                        )
                     }
                 });
-            });
+            },
+        );
     }
 
     /// Start scheduler and run all jobs,  
@@ -992,14 +1005,16 @@ where
         {
             #[cfg(not(windows))]
             for sig in TERM_SIGNALS {
-                signal_hook::flag::register_conditional_shutdown(*sig, 1, Arc::clone(&term)).unwrap();
+                signal_hook::flag::register_conditional_shutdown(*sig, 1, Arc::clone(&term))
+                    .unwrap();
                 signal_hook::flag::register(*sig, Arc::clone(&term)).unwrap();
             }
         }
         {
             #[cfg(windows)]
             for sig in vec![SIGINT, SIGTERM] {
-                signal_hook::flag::register_conditional_shutdown(*sig, 1, Arc::clone(&term)).unwrap();
+                signal_hook::flag::register_conditional_shutdown(*sig, 1, Arc::clone(&term))
+                    .unwrap();
                 signal_hook::flag::register(*sig, Arc::clone(&term)).unwrap();
             }
         }

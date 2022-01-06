@@ -1,6 +1,7 @@
 use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Weekday};
-use std::fmt;
+use std::{fmt, sync::atomic::Ordering};
 
+use crate::{metric::Metric, METRIC_STORAGE};
 /// Time unit.
 pub(crate) enum TimeUnit {
     Second,
@@ -67,6 +68,8 @@ pub struct Job {
     job_name: String,
     // job_core: Arc<RwLock<JobArcHandler<L>>>,
     locker: bool,
+
+    interval_fn: Option<fn(&Metric, &DateTime<Local>) -> Duration>,
 }
 
 impl Job {
@@ -84,6 +87,7 @@ impl Job {
             is_at,
             job_name: "".into(),
             locker: false,
+            interval_fn: None,
         }
     }
 
@@ -109,6 +113,16 @@ impl Job {
     #[inline]
     pub(crate) fn set_unit(&mut self, unit: TimeUnit) {
         self.time_unit = Some(unit);
+    }
+
+    #[inline]
+    pub(crate) fn set_interval_fn(&mut self, f: fn(&Metric, &DateTime<Local>) -> Duration) {
+        self.interval_fn = Some(f);
+    }
+
+    #[inline]
+    pub(crate) fn has_interval_fn(&self) -> bool {
+        self.interval_fn.is_some()
     }
 
     #[inline]
@@ -184,10 +198,8 @@ impl Job {
 
     /// Compute the time when the job should run next time.
     pub(crate) fn schedule_run_time(&mut self) {
-        let now = Local::now();
-        self.last_run = now;
         let granularity = self.cmp_time_granularity();
-        self.next_run = match self.time_unit {
+        let mut next_run = match self.time_unit {
             Some(TimeUnit::Second) | Some(TimeUnit::Minute) | Some(TimeUnit::Hour) => self.last_run,
             Some(TimeUnit::Day) => {
                 let mut midnight = Local
@@ -216,20 +228,32 @@ impl Job {
                 }
                 midnight
             }
-            None => self.last_run, // todo: handle this condition
+            None => self.last_run + granularity, // todo: handle this condition
         };
-
-        while self.next_run.le(&now) || self.next_run.le(&self.last_run) {
-            self.next_run = self.next_run + granularity;
+        let now = Local::now();
+        while (next_run.le(&now) || next_run.le(&self.last_run)) && self.interval_fn.is_none() {
+            next_run = next_run + granularity;
         }
+        if next_run.gt(&self.next_run) {
+            self.last_run = self.next_run;
+            self.next_run = next_run;
+        }
+        METRIC_STORAGE
+            .get(&self.job_name)
+            .unwrap()
+            .scheduled_numbers
+            .fetch_add(1, Ordering::SeqCst);
     }
 
     #[inline]
     fn cmp_time_granularity(&self) -> Duration {
-        self.time_unit
-            .as_ref()
-            .and_then(|tu| Some(tu.granularity() * self.call_interval))
-            .unwrap()
+        self.time_unit.as_ref().map_or_else(
+            || {
+                let f = self.interval_fn.unwrap();
+                f(&METRIC_STORAGE.get(&self.job_name).unwrap(), &self.last_run)
+            },
+            |tu| tu.granularity() * self.call_interval,
+        )
     }
 }
 

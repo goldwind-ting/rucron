@@ -1,8 +1,9 @@
 use async_trait::async_trait;
-use chrono::{Datelike, Local, Timelike};
+use chrono::Duration as duration;
+use chrono::{DateTime, Datelike, Local, Timelike};
 use rucron::handler::JobHandler;
-use rucron::{execute, ArgStorage, EmptyTask, Locker, ParseArgs, RucronError, Scheduler};
-use std::{error::Error, sync::Arc};
+use rucron::{execute, ArgStorage, EmptyTask, Locker, Metric, ParseArgs, RucronError, Scheduler};
+use std::{error::Error, sync::atomic::Ordering, sync::Arc};
 use tokio::sync::{
     mpsc::{channel, Sender},
     RwLock,
@@ -215,6 +216,7 @@ async fn test_second_interval() {
     let guard = TIME_COUNAINER_SECOND_INTERVAL.read().await;
     let leng = guard.len();
     assert_eq!(guard.len(), 3);
+    println!("guard: {:?}", guard);
     for i in 1..leng {
         assert!((guard[i] - guard[i - 1]) as i32 >= *INTERVAL);
         assert!((guard[i] - guard[i - 1]) as i32 <= *INTERVAL + 1);
@@ -706,3 +708,41 @@ async fn test_panic_job_with_arguments() {
     let guard = EIGHT.try_read().unwrap();
     assert_eq!(*guard, 8);
 }
+
+async fn counter() -> Result<(), Box<dyn Error>> {
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    println!("counter");
+    let mut guard = EIGHT.write().await;
+    *guard += 1;
+    Ok(())
+}
+
+fn once(m: &Metric, last: &DateTime<Local>) -> duration {
+    let n = m.scheduled_numbers.load(Ordering::Relaxed);
+    if n < 1 {
+        duration::seconds(2)
+    } else if n == 1 {
+        duration::seconds(last.timestamp() * 2)
+    } else {
+        duration::seconds(0)
+    }
+}
+
+#[tokio::test]
+async fn test_by() {
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    let sch = sch.by(once).todo(execute(counter)).await;
+    start_scheldure_with_cancel(sch, 6).await;
+    let guard = EIGHT.read().await;
+    assert_eq!(*guard, 1);
+}
+
+#[tokio::test]
+async fn test_multiple_thread() {
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    let sch = sch.by(once).todo(execute(counter)).await;
+    start_scheldure_with_cancel(sch, 6).await;
+    let guard = EIGHT.read().await;
+    assert_eq!(*guard, 3);
+}
+

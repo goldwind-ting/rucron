@@ -1,12 +1,15 @@
 extern crate rucron;
 
+use chrono::{DateTime, Duration, Local};
+use rand::Rng;
 use redis::{Client, Commands};
 use rucron::{
-    execute, get_metric_with_name, ArgStorage, EmptyTask, Locker, RucronError, Scheduler,
+    execute, get_metric_with_name, ArgStorage, EmptyTask, Locker, Metric, RucronError, Scheduler,
 };
-
-use rand::Rng;
-use std::{error::Error, sync::Arc};
+use std::{
+    error::Error,
+    sync::{atomic::Ordering, Arc},
+};
 use tokio::sync::mpsc::channel;
 
 /// Distributed lock implementation with
@@ -66,6 +69,23 @@ async fn record_metric() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+async fn counter() -> Result<(), Box<dyn Error>> {
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    println!("counter");
+    Ok(())
+}
+
+fn once(m: &Metric, last: &DateTime<Local>) -> Duration {
+    let n = m.scheduled_numbers.load(Ordering::Relaxed);
+    if n < 1 {
+        Duration::seconds(2)
+    } else if n == 1 {
+        Duration::seconds(last.timestamp() * 2)
+    } else {
+        Duration::seconds(0)
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let rl = RedisLocker::new();
@@ -82,5 +102,6 @@ async fn main() {
         .second()
         .todo(execute(record_metric))
         .await;
+    let sch = sch.by(once).need_lock().todo(execute(counter)).await;
     sch.start().await;
 }

@@ -1,5 +1,6 @@
 use serde::Serialize;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
 pub(crate) enum NumberType {
     Error,
     Unlock,
@@ -7,20 +8,22 @@ pub(crate) enum NumberType {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct Metric {
-    success_numbers: AtomicUsize,
-    total_elapsed_time: AtomicUsize,
-    maximum_elapsed_time: AtomicUsize,
-    minimum_elapsed_time: AtomicUsize,
-    average_elapsed_time: AtomicUsize,
-    error_numbers: AtomicUsize,
-    failure_of_unlock_numbers: AtomicUsize,
-    failure_of_lock_numbers: AtomicUsize,
+pub struct Metric {
+    pub scheduled_numbers: AtomicUsize,
+    pub success_numbers: AtomicUsize,
+    pub total_elapsed_time: AtomicUsize,
+    pub maximum_elapsed_time: AtomicUsize,
+    pub minimum_elapsed_time: AtomicUsize,
+    pub average_elapsed_time: AtomicUsize,
+    pub error_numbers: AtomicUsize,
+    pub failure_of_unlock_numbers: AtomicUsize,
+    pub failure_of_lock_numbers: AtomicUsize,
 }
 
 impl Default for Metric {
     fn default() -> Self {
         Self {
+            scheduled_numbers: AtomicUsize::default(),
             success_numbers: AtomicUsize::default(),
             total_elapsed_time: AtomicUsize::default(),
             maximum_elapsed_time: AtomicUsize::default(),
