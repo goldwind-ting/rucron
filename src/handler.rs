@@ -15,6 +15,12 @@ use std::{
     sync::Arc,
 };
 
+/// The trait is the task to be run in fact, the task must be asynchronous.
+/// 
+/// The function with no parameters and less than 16 parameters has implemented the trait.
+/// 
+/// The `Scheduler` will call this function when a job is `runnable`.
+///
 #[async_trait]
 pub trait Executor<T>: Send + Sized + 'static {
     async fn call(&self, args: &ArgStorage) -> Result<(), RucronError>;
@@ -33,14 +39,51 @@ where
     }
 }
 
+
+/// `Scheduler` mangages all jobs by this trait. When a job is runnable, 
+/// 
+/// the `Schedluler` find recursively the job by name and parse arguments the job need from `args`.
 #[async_trait]
 pub trait JobHandler: Send + Sized + 'static {
     async fn call(&self, args: Arc<ArgStorage>, name: String);
     fn name(&self) -> String;
 }
 
-/// Implement the trait to parse or get arguments from [`ArgStorage`]. The [`Scheduler`] will call `parse_args` and pass arguments to `job`
-///  when run job.
+/// Implement the trait to parse or get arguments from [`ArgStorage`].
+/// 
+/// The [`Scheduler`] will call `parse_args` and pass arguments to `job` when run job.
+/// # Examples
+///
+/// ```
+/// use rucron::{Scheduler, EmptyTask, execute, ArgStorage, ParseArgs};
+/// use async_trait::async_trait;
+/// use std::error::Error;
+///
+///
+/// #[derive(Clone)]
+/// struct Person {
+///     age: i32,
+/// }
+///
+/// #[async_trait]
+/// impl ParseArgs for Person {
+///     type Err = std::io::Error;
+///     async fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err> {
+///         return Ok(args.get::<Person>().unwrap().clone());
+///     }
+/// }
+/// async fn say_age(p: Person) -> Result<(), Box<dyn Error>>  {
+///     println!("I am {} years old", p.age);
+///     Ok(())
+/// }
+///
+/// #[tokio::main]
+/// async fn main(){
+///     let sch = Scheduler::<EmptyTask, ()>::new(2, 10);
+///     let sch = sch.every(2).second().immediately_run().todo(execute(say_age)).await;
+///     assert!(sch.is_scheduled("say_age"));
+/// }
+/// ```
 #[async_trait]
 pub trait ParseArgs: Sized + Clone {
     type Err: Error;
@@ -89,6 +132,8 @@ impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14);
 impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15);
 impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16);
 
+
+/// `Task` stores runtime parameters of a job which name is [`name`].
 #[derive(Debug, Clone)]
 pub struct Task<T, TH, L> {
     pub(crate) name: String,
@@ -96,6 +141,7 @@ pub struct Task<T, TH, L> {
     pub(crate) fallback: TH,
     pub(crate) locker: Option<L>,
     pub(crate) need_lock: bool,
+    pub(crate) n_threads: u8,
 }
 
 #[async_trait]
@@ -123,19 +169,21 @@ where
                                 unlock_and_record(locker, &name[..], args);
                             });
                         }
-                        Ok(b) if !b => METRIC_STORAGE
-                            .get(&self.name())
-                            .unwrap()
-                            .add_failure(NumberType::Lock),
+                        Ok(b) if !b => {
+                            METRIC_STORAGE.get(&self.name()).map_or_else(
+                                || unreachable!("unreachable"),
+                                |m| m.add_failure(NumberType::Lock),
+                            );
+                        }
                         Ok(_) => {
                             unreachable!("unreachable!")
                         }
                         Err(e) => {
                             log::error!("{}", e);
-                            METRIC_STORAGE
-                                .get(&self.name())
-                                .unwrap()
-                                .add_failure(NumberType::Error)
+                            METRIC_STORAGE.get(&self.name()).map_or_else(
+                                || unreachable!("unreachable"),
+                                |m| m.add_failure(NumberType::Error),
+                            );
                         }
                     },
                     _ => {}
@@ -145,7 +193,7 @@ where
                     "[DEBUG] Spawns a new asynchronous task to run: {}",
                     &name[..]
                 );
-                for _ in (0..3).into_iter() {
+                for _ in (0..self.n_threads).into_iter() {
                     let name_copy = name.clone();
                     let task_copy = task.clone();
                     let args_copy = args.clone();
@@ -160,11 +208,13 @@ where
             JobHandler::call(&self.fallback, args, name).await;
         }
     }
+    #[inline(always)]
     fn name(&self) -> String {
         return self.name.clone();
     }
 }
 
+/// [`ExecutorWrapper`] wraps the `Executor` and stores it's name.
 #[derive(Clone)]
 pub struct ExecutorWrapper<E, T> {
     executor: E,
@@ -172,6 +222,32 @@ pub struct ExecutorWrapper<E, T> {
     _marker: PhantomData<T>,
 }
 
+
+/// Create a `ExecutorWrapper` and add another job to the `Scheduler`.
+/// 
+/// - `executor is the job to be run.
+/// 
+ /// # Panics
+///
+/// Panics if cann't parse name of [`E`] by `type_name`.
+/// 
+/// # Examples
+/// 
+/// ```
+/// use rucron::{execute, Scheduler, EmptyTask};
+/// use std::error::Error;
+/// use std::sync::Arc;
+/// 
+/// async fn foo() -> Result<(), Box<dyn Error>> {
+///     println!("{}", "foo");
+///     Ok(())
+/// }
+/// #[tokio::main]
+/// async fn main(){
+///     let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+///     sch.every(2).second().todo(execute(foo)).await;
+/// }
+/// ```
 pub fn execute<E, T>(executor: E) -> ExecutorWrapper<E, T>
 where
     E: Executor<T>,
@@ -200,61 +276,36 @@ where
         Executor::call(&self.executor, &*args).await.map_or_else(
             |e| {
                 log::error!("{}", e);
-                METRIC_STORAGE
-                    .get(&self.name())
-                    .unwrap()
-                    .add_failure(NumberType::Error)
+                METRIC_STORAGE.get(&self.name()).map_or_else(
+                    || unreachable!("unreachable"),
+                    |m| m.add_failure(NumberType::Error),
+                );
             },
             |_| {
-                METRIC_STORAGE
-                    .get(&self.name())
-                    .unwrap()
-                    .swap_time_and_add_runs(
-                        Local::now().signed_duration_since(start).num_seconds() as usize
-                    )
+                METRIC_STORAGE.get(&self.name()).map_or_else(
+                    || unreachable!("unreachable"),
+                    |m| {
+                        m.swap_time_and_add_runs(
+                            Local::now().signed_duration_since(start).num_seconds() as usize,
+                        )
+                    },
+                );
             },
         );
     }
 
+    #[inline(always)]
     fn name(&self) -> String {
         self.executor_name.clone()
     }
 }
 
-/// The storage of arguments, which stores all the arguments [`jobs`] needed.
-///
-/// # Examples
-///
-/// ```
-/// use rucron::{Scheduler, EmptyTask, execute, ArgStorage, ParseArgs};
-/// use async_trait::async_trait;
-/// use std::error::Error;
-///
-///
-/// #[derive(Clone)]
-/// struct Person {
-///     age: i32,
-/// }
-///
-/// #[async_trait]
-/// impl ParseArgs for Person {
-///     type Err = std::io::Error;
-///     async fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err> {
-///         return Ok(args.get::<Person>().unwrap().clone());
-///     }
-/// }
-/// async fn say_age(p: Person) -> Result<(), Box<dyn Error>>  {
-///     println!("I am {} years old", p.age);
-///     Ok(())
-/// }
-///
-/// #[tokio::main]
-/// async fn main(){
-///     let sch = Scheduler::<EmptyTask, ()>::new(2, 10);
-///     let sch = sch.every(2).second().immediately_run().todo(execute(say_age)).await;
-///     assert!(sch.is_scheduled("say_age"));
-/// }
-/// ```
+/// The storage  stores all the arguments that [`jobs`] needed.
+/// 
+/// It uses the extensions to store arguments, see the [docs] for more details.
+/// 
+/// [docs]: https://docs.rs/http/latest/http/struct.Extensions.html
+/// 
 #[derive(Debug)]
 pub struct ArgStorage(Extensions);
 

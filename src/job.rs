@@ -12,7 +12,7 @@ pub(crate) enum TimeUnit {
 }
 
 impl TimeUnit {
-    #[inline]
+    #[inline(always)]
     fn granularity(&self) -> Duration {
         match self {
             Self::Second => Duration::seconds(1),
@@ -22,7 +22,7 @@ impl TimeUnit {
             Self::Week => Duration::weeks(1),
         }
     }
-    #[inline]
+    #[inline(always)]
     fn number_from_zero(&self) -> i8 {
         match self {
             Self::Second => 0,
@@ -48,35 +48,36 @@ impl fmt::Debug for TimeUnit {
 
 /// A periodic job used by Scheduler.
 pub struct Job {
-    // pause interval * unit between runs
+    /// Pause `interval * unit` seconds between runs
     call_interval: i32,
-    // datetime of next run.
+    /// Datetime of next run.
     next_run: DateTime<Local>,
-    // datetime of last run.
+    /// Datetime of last run.
     last_run: DateTime<Local>,
-    // time unit.
+    /// Time unit.
     time_unit: Option<TimeUnit>,
-    // wheather run at specific time
+    /// Wheather run at specific time
     is_at: bool,
-    // specific day of the week to start on.
+    /// Specific day of the week to start on.
     weekday: Option<Weekday>,
-    // specific time of the day to start on.
+    /// Specific time of the day to start on.
     at_time: Option<Duration>,
-    // wheather run at job immediately.
+    /// Wheather run at job immediately.
     is_immediately_run: bool,
-    // job name or function name.
+    /// Job name or function name.
     job_name: String,
-    // job_core: Arc<RwLock<JobArcHandler<L>>>,
+    /// A distributed locker,
     locker: bool,
-
+    /// This function returns a `Duration` which is equal to `next_time` minus `last_time`.
     interval_fn: Option<fn(&Metric, &DateTime<Local>) -> Duration>,
+    /// Numbers of thread to run a job parallely
+    n_threads: u8,
 }
 
 impl Job {
     pub(crate) fn new(call_interval: i32, is_at: bool) -> Job {
         let now = Local::now();
         Job {
-            // job_core: Arc::new(RwLock::new(JobArcHandler::new())),
             call_interval,
             next_run: now,
             last_run: now,
@@ -88,79 +89,91 @@ impl Job {
             job_name: "".into(),
             locker: false,
             interval_fn: None,
+            n_threads: 1,
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn get_job_name(&self) -> String {
         self.job_name.clone()
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn set_name(&mut self, name: String) {
         self.job_name = name;
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn need_locker(&mut self) {
         self.locker = true;
     }
 
-    #[inline]
+    #[inline(always)]
+    pub(crate) fn threads(&mut self, n: u8) {
+        self.n_threads = n;
+    }
+
+    #[inline(always)]
     pub(crate) fn is_need_lock(&self) -> bool {
         self.locker
     }
-    #[inline]
+
+    #[inline(always)]
+    pub(crate) fn n_threads(&self) -> u8 {
+        self.n_threads
+    }
+
+    #[inline(always)]
     pub(crate) fn set_unit(&mut self, unit: TimeUnit) {
         self.time_unit = Some(unit);
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn set_interval_fn(&mut self, f: fn(&Metric, &DateTime<Local>) -> Duration) {
         self.interval_fn = Some(f);
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn has_interval_fn(&self) -> bool {
         self.interval_fn.is_some()
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn get_unit(&self) -> Option<&TimeUnit> {
         self.time_unit.as_ref()
     }
 
-    #[inline]
-    pub(crate) fn get_is_at(&self) -> bool {
+    #[inline(always)]
+    pub(crate) fn is_at(&self) -> bool {
         self.is_at
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn get_at_time(&self) -> Option<Duration> {
         self.at_time
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn immediately_run(&mut self) {
         self.is_immediately_run = true
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn get_immediately_run(&self) -> bool {
         self.is_immediately_run
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn runnable(&self) -> bool {
         self.next_run.le(&Local::now())
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn set_at_time(&mut self, h: i64, m: i64, s: i64) {
         self.at_time = Some(Duration::hours(h) + Duration::minutes(m) + Duration::seconds(s));
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn set_weekday(&mut self, w: i64) {
         self.weekday = match w {
             1 => Some(Weekday::Mon),
@@ -174,22 +187,22 @@ impl Job {
         };
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn get_next_run(&self) -> DateTime<Local> {
         self.next_run
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn get_last_run(&self) -> DateTime<Local> {
         self.last_run
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn get_weekday(&self) -> Option<Weekday> {
         self.weekday
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn get_time_unit(&self) -> Option<i8> {
         self.time_unit
             .as_ref()
@@ -221,6 +234,7 @@ impl Job {
                     )
                     .and_hms(0, 0, 0);
                 midnight = midnight + self.at_time.unwrap_or(Duration::zero());
+                println!("name: {}, weekday: {:?}", self.job_name, self.weekday);
                 let deviation: i32 = self.weekday.unwrap().number_from_sunday() as i32
                     - midnight.weekday().number_from_sunday() as i32;
                 if deviation != 0 {
@@ -238,18 +252,19 @@ impl Job {
             self.last_run = self.next_run;
             self.next_run = next_run;
         }
-        METRIC_STORAGE
-            .get(&self.job_name)
-            .unwrap()
-            .scheduled_numbers
-            .fetch_add(1, Ordering::SeqCst);
+        METRIC_STORAGE.get(&self.job_name).map_or_else(
+            || unreachable!("unreachable"),
+            |m| {
+                m.n_scheduled.fetch_add(1, Ordering::SeqCst);
+            },
+        );
     }
 
-    #[inline]
+    #[inline(always)]
     fn cmp_time_granularity(&self) -> Duration {
         self.time_unit.as_ref().map_or_else(
             || {
-                let f = self.interval_fn.unwrap();
+                let f = self.interval_fn.expect("Please set time unit or provide interval_fn in [cmp_time_granularity].");
                 f(&METRIC_STORAGE.get(&self.job_name).unwrap(), &self.last_run)
             },
             |tu| tu.granularity() * self.call_interval,

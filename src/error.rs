@@ -10,4 +10,8 @@ pub enum RucronError {
     LockError(String),
     #[error("when unlock found error: {0}")]
     UnLockError(String),
+    #[error("job is not found")]
+    NotFound,
+    #[error("when serialize or deserialize found error: {0}")]
+    SerdeError(String),
 }

@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chrono::Duration as duration;
 use chrono::{DateTime, Datelike, Local, Timelike};
 use rucron::handler::JobHandler;
-use rucron::{execute, ArgStorage, EmptyTask, Locker, Metric, ParseArgs, RucronError, Scheduler};
+use rucron::{execute, ArgStorage, EmptyTask, Locker, Metric, ParseArgs, RucronError, Scheduler, get_metric_with_name};
 use std::{error::Error, sync::atomic::Ordering, sync::Arc};
 use tokio::sync::{
     mpsc::{channel, Sender},
@@ -11,6 +11,7 @@ use tokio::sync::{
 use tokio::time::{sleep, Duration};
 #[macro_use]
 extern crate lazy_static;
+use serde::Deserialize;
 
 lazy_static! {
     static ref BROADCAST_CONNECT: RwLock<Option<Sender<bool>>> = RwLock::new(None);
@@ -110,6 +111,10 @@ async fn cooking() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+async fn error_job() -> Result<(), Box<dyn Error>> {
+    Err(Box::new(RucronError::NotFound))
+}
+
 #[derive(Clone)]
 struct Person {
     age: i32,
@@ -138,6 +143,9 @@ async fn is_eight_years_old(p: Person) -> Result<(), Box<dyn Error>> {
     if p.age != 8 {
         let mut guard = EIGHT.write().await;
         *guard = 8;
+    } else {
+        let mut guard = EIGHT.write().await;
+        *guard = 0;
     };
     Ok(())
 }
@@ -560,10 +568,16 @@ async fn test_every_week_job() {
     let expect_next_run = now + chrono::Duration::weeks(1);
     assert_eq!(learn_rust_time, expect_next_run.timestamp());
 
+    let mut week = now.weekday().number_from_monday() as i64;
+    if week == 6{
+        week = 7
+    }else{
+        week = (week + 1) % 7
+    }
     let sch = sch
         .every(1)
         .week(
-            (now.weekday().number_from_monday() as i64 + 1) % 7,
+            week,
             now.hour() as i64,
             now.minute() as i64,
             now.second() as i64,
@@ -592,11 +606,18 @@ async fn test_at_week_job() {
     let learn_rust_time = sch.next_run_with_name("learn_rust").unwrap();
     let expect_next_run = now + chrono::Duration::weeks(1);
     assert_eq!(learn_rust_time, expect_next_run.timestamp());
+    
+    let mut week = now.weekday().number_from_monday() as i64;
+    if week == 6{
+        week = 7
+    }else{
+        week = (week + 1) % 7
+    }
 
     let sch = sch
         .at()
         .week(
-            (now.weekday().number_from_monday() as i64 + 1) % 7,
+            week,
             now.hour() as i64,
             now.minute() as i64,
             now.second() as i64,
@@ -690,6 +711,8 @@ async fn test_job_with_arguments() {
         .todo(execute(is_eight_years_old))
         .await;
     start_scheldure_with_cancel(sch, 2).await;
+    let guard = EIGHT.try_read().unwrap();
+    assert_eq!(*guard, 0);
 }
 
 #[tokio::test]
@@ -718,7 +741,7 @@ async fn counter() -> Result<(), Box<dyn Error>> {
 }
 
 fn once(m: &Metric, last: &DateTime<Local>) -> duration {
-    let n = m.scheduled_numbers.load(Ordering::Relaxed);
+    let n = m.n_scheduled.load(Ordering::Relaxed);
     if n < 1 {
         duration::seconds(2)
     } else if n == 1 {
@@ -731,18 +754,180 @@ fn once(m: &Metric, last: &DateTime<Local>) -> duration {
 #[tokio::test]
 async fn test_by() {
     let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    let now = Local::now();
     let sch = sch.by(once).todo(execute(counter)).await;
+    assert_eq!(sch.time_unit_with_name("counter"), None);
+    assert_eq!(sch.weekday_with_name("counter"), None);
+    let next = now + duration::seconds(2);
+    assert_eq!(sch.last_run_with_name("counter").unwrap(), now.timestamp());
+    assert_eq!(sch.next_run_with_name("counter").unwrap(), next.timestamp());
     start_scheldure_with_cancel(sch, 6).await;
-    let guard = EIGHT.read().await;
-    assert_eq!(*guard, 1);
+    {
+        let guard = EIGHT.read().await;
+        assert_eq!(*guard, 1);
+    }
+    {
+        let mut guard = EIGHT.write().await;
+        *guard = 0;
+    }
 }
 
 #[tokio::test]
-async fn test_multiple_thread() {
+async fn test_by_immediately_run() {
     let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
-    let sch = sch.by(once).todo(execute(counter)).await;
+    let sch = sch.by(once).immediately_run().todo(execute(counter)).await;
     start_scheldure_with_cancel(sch, 6).await;
-    let guard = EIGHT.read().await;
-    assert_eq!(*guard, 3);
+    {
+        let guard = EIGHT.read().await;
+        assert_eq!(*guard, 2);
+    }
+    let js = get_metric_with_name("counter").unwrap();
+    let m: MetricTest = serde_json::from_str(&js).unwrap();
+    assert_eq!(2, m.n_scheduled);
+    assert_eq!(2, m.n_success);
+    assert_eq!(4, m.t_total_elapsed);
+    assert_eq!(2, m.t_maximum_elapsed);
+    assert_eq!(2,  m.t_minimum_elapsed);
+    assert_eq!(2,  m.t_average_elapsed);
+    assert_eq!(0,  m.n_error);
+    assert_eq!(0,  m.n_failure_of_unlock);
+    assert_eq!(0,  m.n_failure_of_lock);
+    {
+        let mut guard = EIGHT.write().await;
+        *guard = 0;
+    }
 }
 
+#[tokio::test]
+async fn test_by_need_locker() {
+    let rl = RedisLockerOk;
+    let mut sch = Scheduler::<EmptyTask, RedisLockerOk>::new(1, 10);
+    sch.set_locker(rl);
+    let sch = sch.by(once).need_lock().todo(execute(counter)).await;
+    start_scheldure_with_cancel(sch, 6).await;
+    {
+        let guard = EIGHT.read().await;
+        assert_eq!(*guard, 1);
+    }
+    let js = get_metric_with_name("counter").unwrap();
+    let m: MetricTest = serde_json::from_str(&js).unwrap();
+    assert_eq!(2, m.n_scheduled);
+    assert_eq!(1, m.n_success);
+    assert_eq!(2, m.t_total_elapsed);
+    assert_eq!(2, m.t_maximum_elapsed);
+    assert_eq!(2,  m.t_minimum_elapsed);
+    assert_eq!(2,  m.t_average_elapsed);
+    assert_eq!(0,  m.n_error);
+    assert_eq!(0,  m.n_failure_of_unlock);
+    assert_eq!(0,  m.n_failure_of_lock);
+    {
+        let mut guard = EIGHT.write().await;
+        *guard = 0;
+    }
+}
+
+#[tokio::test]
+async fn test_by_with_args() {
+    let child = Person { age: 2 };
+    let mut arg = ArgStorage::new();
+    arg.insert(child);
+    let mut sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    sch.set_arg_storage(arg);
+    let sch = sch.by(once).todo(execute(is_eight_years_old)).await;
+    start_scheldure_with_cancel(sch, 2).await;
+    let guard = EIGHT.try_read().unwrap();
+    assert_eq!(*guard, 8);
+}
+
+#[tokio::test]
+async fn test_n_threads() {
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    let sch = sch.by(once).n_threads(3).todo(execute(counter)).await;
+    start_scheldure_with_cancel(sch, 6).await;
+    {
+        let guard = EIGHT.read().await;
+        assert_eq!(*guard, 3);
+    }
+    {
+        let mut guard = EIGHT.write().await;
+        *guard = 0;
+    }
+}
+
+#[tokio::test]
+async fn test_error_job() {
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    let sch = sch.every(2).second().todo(execute(error_job)).await;
+    start_scheldure_with_cancel(sch, 6).await;
+    let js = get_metric_with_name("error_job").unwrap();
+    let m: MetricTest = serde_json::from_str(&js).unwrap();
+    assert_eq!(4, m.n_scheduled);
+    assert_eq!(0, m.n_success);
+    assert_eq!(0, m.t_total_elapsed);
+    assert_eq!(0, m.t_maximum_elapsed);
+    assert_eq!(0,  m.t_minimum_elapsed);
+    assert_eq!(0,  m.t_average_elapsed);
+    assert_eq!(3,  m.n_error);
+    assert_eq!(0,  m.n_failure_of_unlock);
+    assert_eq!(0,  m.n_failure_of_lock);
+}
+
+
+#[tokio::test]
+async fn test_record_locker_false() {
+    let rle = RedisLockerFlase;
+    let mut sch = Scheduler::<EmptyTask, RedisLockerFlase>::new(1, 10);
+    sch.set_locker(rle);
+    let sch = sch.every(2).second().need_lock().todo(execute(error_job)).await;
+    start_scheldure_with_cancel(sch, 6).await;
+    let js = get_metric_with_name("error_job").unwrap();
+    let m: MetricTest = serde_json::from_str(&js).unwrap();
+    assert_eq!(4, m.n_scheduled);
+    assert_eq!(0, m.n_success);
+    assert_eq!(0, m.t_total_elapsed);
+    assert_eq!(0, m.t_maximum_elapsed);
+    assert_eq!(0,  m.t_minimum_elapsed);
+    assert_eq!(0,  m.t_average_elapsed);
+    assert_eq!(0,  m.n_error);
+    assert_eq!(0,  m.n_failure_of_unlock);
+    assert_eq!(3,  m.n_failure_of_lock);
+}
+
+#[derive(Deserialize, Debug)]
+struct MetricTest{
+    n_scheduled: i8,
+    n_success: i8,
+    t_total_elapsed: i8,
+    t_maximum_elapsed: i8,
+    t_minimum_elapsed: i8,
+    t_average_elapsed: i8,
+    n_error: i8,
+    n_failure_of_unlock: i8,
+    n_failure_of_lock: i8,
+}
+
+#[tokio::test]
+async fn test_metric() {
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    let sch = sch.by(once).n_threads(3).todo(execute(counter)).await;
+    start_scheldure_with_cancel(sch, 6).await;
+    {
+        let guard = EIGHT.read().await;
+        assert_eq!(*guard, 3);
+    }
+    let js = get_metric_with_name("counter").unwrap();
+    let m: MetricTest = serde_json::from_str(&js).unwrap();
+    assert_eq!(2, m.n_scheduled);
+    assert_eq!(3, m.n_success);
+    assert_eq!(6, m.t_total_elapsed);
+    assert_eq!(2, m.t_maximum_elapsed);
+    assert_eq!(2,  m.t_minimum_elapsed);
+    assert_eq!(2,  m.t_average_elapsed);
+    assert_eq!(0,  m.n_error);
+    assert_eq!(0,  m.n_failure_of_unlock);
+    assert_eq!(0,  m.n_failure_of_lock);
+    {
+        let mut guard = EIGHT.write().await;
+        *guard = 0;
+    }
+}

@@ -4,7 +4,7 @@ use chrono::{DateTime, Duration, Local};
 use rand::Rng;
 use redis::{Client, Commands};
 use rucron::{
-    execute, get_metric_with_name, ArgStorage, EmptyTask, Locker, Metric, RucronError, Scheduler,
+    execute, get_metric_with_name, ArgStorage, EmptyTask, Locker, Metric, RucronError, Scheduler
 };
 use std::{
     error::Error,
@@ -64,7 +64,7 @@ async fn learn_rust() -> Result<(), Box<dyn Error>> {
 }
 
 async fn record_metric() -> Result<(), Box<dyn Error>> {
-    let m = get_metric_with_name("learn_rust");
+    let m = get_metric_with_name("learn_rust").unwrap();
     println!("{}", m);
     Ok(())
 }
@@ -76,7 +76,7 @@ async fn counter() -> Result<(), Box<dyn Error>> {
 }
 
 fn once(m: &Metric, last: &DateTime<Local>) -> Duration {
-    let n = m.scheduled_numbers.load(Ordering::Relaxed);
+    let n = m.n_scheduled.load(Ordering::Relaxed);
     if n < 1 {
         Duration::seconds(2)
     } else if n == 1 {

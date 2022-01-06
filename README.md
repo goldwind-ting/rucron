@@ -14,7 +14,7 @@
       alt="Download" />
   </a>  
 
-A job scheduling library writed by rust, which is similar to [gocron](https://github.com/go-co-op/gocron) or linux crontab.  
+A lighweight job scheduling library writed by rust, which is similar to [gocron](https://github.com/go-co-op/gocron) or linux crontab.  
 The crate currently only supports asynchronous task which uses `tokio` runtime.
 
 ## Usage
