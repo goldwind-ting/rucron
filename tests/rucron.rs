@@ -667,22 +667,6 @@ async fn panic_job() -> Result<(), Box<dyn Error>> {
 }
 
 #[tokio::test]
-async fn test_start_with_unlock() {
-    let mut sch = Scheduler::<EmptyTask, RedisLockerOk>::new(1, 10);
-    let rl = RedisLockerOk;
-    sch.set_locker(rl);
-    let sch = sch
-        .every(2)
-        .second()
-        .with_unlock()
-        .todo(execute(panic_job))
-        .await;
-    start_scheldure_with_cancel(sch, 3).await;
-    let guard = LOCKED_FLAG.try_read().unwrap();
-    assert_eq!(*guard, true);
-}
-
-#[tokio::test]
 async fn test_start_without_unlock() {
     let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
     let sch = sch.every(2).second().todo(execute(panic_job)).await;

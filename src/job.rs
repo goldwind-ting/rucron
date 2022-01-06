@@ -67,7 +67,6 @@ pub struct Job {
     job_name: String,
     // job_core: Arc<RwLock<JobArcHandler<L>>>,
     locker: bool,
-    unlock_before_start: bool,
 }
 
 impl Job {
@@ -85,18 +84,7 @@ impl Job {
             is_at,
             job_name: "".into(),
             locker: false,
-            unlock_before_start: false,
         }
-    }
-
-    #[inline]
-    pub(crate) fn is_need_unlock(&self) -> bool {
-        self.unlock_before_start
-    }
-
-    #[inline]
-    pub(crate) fn need_unlock_before_start(&mut self) {
-        self.unlock_before_start = true;
     }
 
     #[inline]
@@ -115,7 +103,7 @@ impl Job {
     }
 
     #[inline]
-    pub(crate) fn has_locker(&self) -> bool {
+    pub(crate) fn is_need_lock(&self) -> bool {
         self.locker
     }
     #[inline]
@@ -257,7 +245,6 @@ impl fmt::Debug for Job {
             .field("last_run", &self.last_run)
             .field("next_run", &self.next_run)
             .field("call_interval", &self.call_interval)
-            .field("unlock_before_start", &self.unlock_before_start)
             .field("locker", &self.locker)
             .finish()
     }

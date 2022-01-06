@@ -11,10 +11,10 @@ extern crate lazy_static;
 use async_trait::async_trait;
 
 #[cfg(windows)]
-use signal_hook::consts::SIGINT;
+use signal_hook::consts::{SIGINT, SIGTERM};
 
 #[cfg(not(windows))]
-use signal_hook::consts::SIGTSTP; // catch ctrl + z signal
+use signal_hook::consts::TERM_SIGNALS; 
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// `Scheduler` strores all jobs and number of jobs.
@@ -348,26 +348,6 @@ where
         self
     }
 
-    pub fn with_unlock(self) -> Self {
-        {
-            self.jobs
-                .try_write()
-                .and_then(|mut guard| {
-                    Ok(guard.get_mut(self.size - 1).map_or_else(
-                        || {
-                            panic!(
-                                "Cann't get the job in [with_unlock], index: {}",
-                                self.size - 1
-                            )
-                        },
-                        |job| job.need_unlock_before_start(),
-                    ))
-                })
-                .expect("Cann't get write lock in [with_unlock]");
-        }
-        self
-    }
-
     /// Set the time unit to hour.
     ///
     /// # Panics
@@ -671,16 +651,14 @@ where
         let name = task.name();
         self.schedule_and_set_name(name.clone());
         let need_lock: bool;
-        let need_unlock: bool;
         {
             let guard = self.jobs.read().await;
             let cur_job = guard.get(self.size - 1).unwrap();
             if let None = cur_job.get_unit() {
                 panic!("Must set time unit!");
             }
-            need_lock = cur_job.has_locker();
-            need_unlock = cur_job.is_need_unlock();
-            if (need_lock || need_unlock) && self.locker.is_none() {
+            need_lock = cur_job.is_need_lock();
+            if need_lock && self.locker.is_none() {
                 panic!("Please set locker!");
             }
             if cur_job.get_is_at()
@@ -692,12 +670,7 @@ where
             if cur_job.get_immediately_run() {
                 let cur_task = task.clone();
                 let args = self.arg_storage.clone().unwrap();
-                let locker = self.locker.clone();
-                let key = cur_job.get_job_name();
                 tokio::spawn(async move {
-                    if need_unlock {
-                        unlock_and_record(locker.unwrap(), &key, args.clone());
-                    }
                     JobHandler::call(&cur_task, args, name).await;
                 });
             }
@@ -965,6 +938,21 @@ where
         }
     }
 
+    fn drop(&self){
+        self.jobs
+            .try_read()
+            .map_or_else(|e|{
+                panic!("Cann't get read lock in [drop], error: {}", e);
+            },|guard| {
+                guard.iter().for_each(|job|{
+                    if job.is_need_lock(){
+                        let name = job.get_job_name();
+                        unlock_and_record(self.locker.clone().unwrap(), &name, self.arg_storage.clone().unwrap())
+                    }
+                });
+            });
+    }
+
     /// Start scheduler and run all jobs,  
     ///
     /// The scheduler will spawn a asynchronous task for each *runnable* job to execute the job, and
@@ -1003,19 +991,19 @@ where
         let term = Arc::new(AtomicBool::new(false));
         {
             #[cfg(not(windows))]
-            let _ = signal_hook::flag::register(SIGTSTP, Arc::clone(&term)).map_err(|e| {
-                panic!("Cann't register signal: {}", e);
-            });
-            log::info!("[INFO] Have registered [SIGTSTP] signal!");
+            for sig in TERM_SIGNALS {
+                signal_hook::flag::register_conditional_shutdown(*sig, 1, Arc::clone(&term)).unwrap();
+                signal_hook::flag::register(*sig, Arc::clone(&term)).unwrap();
+            }
         }
         {
             #[cfg(windows)]
-            let _ = signal_hook::flag::register(SIGINT, Arc::clone(&term))
-                .map_err(|e| {
-                    panic!("Cann't register signal: {}", e);
-                })
-                .map(|_| log::info!("[INFO] Have registered [SIGTSTP] signal!"));
+            for sig in vec![SIGINT, SIGTERM] {
+                signal_hook::flag::register_conditional_shutdown(*sig, 1, Arc::clone(&term)).unwrap();
+                signal_hook::flag::register(*sig, Arc::clone(&term)).unwrap();
+            }
         }
+        log::info!("[INFO] Have registered [TERM_SIGNALS] signal!");
         let send_trigger = tokio::spawn(async move {
             while !term.load(Ordering::Relaxed) {
                 sleep(Duration::from_secs(1)).await;
@@ -1080,6 +1068,7 @@ where
         });
         log::info!("[INFO] Have started!");
         let _ = tokio::join!(send_trigger, recv_trigger);
+        self.drop();
         return;
     }
 }

@@ -76,7 +76,6 @@ async fn main() {
         .second()
         .immediately_run()
         .need_lock()
-        .with_unlock()
         .todo(execute(learn_rust))
         .await
         .every(5)
