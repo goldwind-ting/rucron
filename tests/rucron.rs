@@ -2,7 +2,10 @@ use async_trait::async_trait;
 use chrono::Duration as duration;
 use chrono::{DateTime, Datelike, Local, Timelike};
 use rucron::handler::JobHandler;
-use rucron::{execute, ArgStorage, EmptyTask, Locker, Metric, ParseArgs, RucronError, Scheduler, get_metric_with_name};
+use rucron::{
+    execute, get_metric_with_name, ArgStorage, EmptyTask, Locker, Metric, ParseArgs, RucronError,
+    Scheduler,
+};
 use std::{error::Error, sync::atomic::Ordering, sync::Arc};
 use tokio::sync::{
     mpsc::{channel, Sender},
@@ -569,9 +572,9 @@ async fn test_every_week_job() {
     assert_eq!(learn_rust_time, expect_next_run.timestamp());
 
     let mut week = now.weekday().number_from_monday() as i64;
-    if week == 6{
+    if week == 6 {
         week = 7
-    }else{
+    } else {
         week = (week + 1) % 7
     }
     let sch = sch
@@ -606,11 +609,11 @@ async fn test_at_week_job() {
     let learn_rust_time = sch.next_run_with_name("learn_rust").unwrap();
     let expect_next_run = now + chrono::Duration::weeks(1);
     assert_eq!(learn_rust_time, expect_next_run.timestamp());
-    
+
     let mut week = now.weekday().number_from_monday() as i64;
-    if week == 6{
+    if week == 6 {
         week = 7
-    }else{
+    } else {
         week = (week + 1) % 7
     }
 
@@ -787,11 +790,11 @@ async fn test_by_immediately_run() {
     assert_eq!(2, m.n_success);
     assert_eq!(4, m.t_total_elapsed);
     assert_eq!(2, m.t_maximum_elapsed);
-    assert_eq!(2,  m.t_minimum_elapsed);
-    assert_eq!(2,  m.t_average_elapsed);
-    assert_eq!(0,  m.n_error);
-    assert_eq!(0,  m.n_failure_of_unlock);
-    assert_eq!(0,  m.n_failure_of_lock);
+    assert_eq!(2, m.t_minimum_elapsed);
+    assert_eq!(2, m.t_average_elapsed);
+    assert_eq!(0, m.n_error);
+    assert_eq!(0, m.n_failure_of_unlock);
+    assert_eq!(0, m.n_failure_of_lock);
     {
         let mut guard = EIGHT.write().await;
         *guard = 0;
@@ -815,11 +818,11 @@ async fn test_by_need_locker() {
     assert_eq!(1, m.n_success);
     assert_eq!(2, m.t_total_elapsed);
     assert_eq!(2, m.t_maximum_elapsed);
-    assert_eq!(2,  m.t_minimum_elapsed);
-    assert_eq!(2,  m.t_average_elapsed);
-    assert_eq!(0,  m.n_error);
-    assert_eq!(0,  m.n_failure_of_unlock);
-    assert_eq!(0,  m.n_failure_of_lock);
+    assert_eq!(2, m.t_minimum_elapsed);
+    assert_eq!(2, m.t_average_elapsed);
+    assert_eq!(0, m.n_error);
+    assert_eq!(0, m.n_failure_of_unlock);
+    assert_eq!(0, m.n_failure_of_lock);
     {
         let mut guard = EIGHT.write().await;
         *guard = 0;
@@ -865,20 +868,24 @@ async fn test_error_job() {
     assert_eq!(0, m.n_success);
     assert_eq!(0, m.t_total_elapsed);
     assert_eq!(0, m.t_maximum_elapsed);
-    assert_eq!(0,  m.t_minimum_elapsed);
-    assert_eq!(0,  m.t_average_elapsed);
-    assert_eq!(3,  m.n_error);
-    assert_eq!(0,  m.n_failure_of_unlock);
-    assert_eq!(0,  m.n_failure_of_lock);
+    assert_eq!(0, m.t_minimum_elapsed);
+    assert_eq!(0, m.t_average_elapsed);
+    assert_eq!(3, m.n_error);
+    assert_eq!(0, m.n_failure_of_unlock);
+    assert_eq!(0, m.n_failure_of_lock);
 }
-
 
 #[tokio::test]
 async fn test_record_locker_false() {
     let rle = RedisLockerFlase;
     let mut sch = Scheduler::<EmptyTask, RedisLockerFlase>::new(1, 10);
     sch.set_locker(rle);
-    let sch = sch.every(2).second().need_lock().todo(execute(error_job)).await;
+    let sch = sch
+        .every(2)
+        .second()
+        .need_lock()
+        .todo(execute(error_job))
+        .await;
     start_scheldure_with_cancel(sch, 6).await;
     let js = get_metric_with_name("error_job").unwrap();
     let m: MetricTest = serde_json::from_str(&js).unwrap();
@@ -886,15 +893,15 @@ async fn test_record_locker_false() {
     assert_eq!(0, m.n_success);
     assert_eq!(0, m.t_total_elapsed);
     assert_eq!(0, m.t_maximum_elapsed);
-    assert_eq!(0,  m.t_minimum_elapsed);
-    assert_eq!(0,  m.t_average_elapsed);
-    assert_eq!(0,  m.n_error);
-    assert_eq!(0,  m.n_failure_of_unlock);
-    assert_eq!(3,  m.n_failure_of_lock);
+    assert_eq!(0, m.t_minimum_elapsed);
+    assert_eq!(0, m.t_average_elapsed);
+    assert_eq!(0, m.n_error);
+    assert_eq!(0, m.n_failure_of_unlock);
+    assert_eq!(3, m.n_failure_of_lock);
 }
 
 #[derive(Deserialize, Debug)]
-struct MetricTest{
+struct MetricTest {
     n_scheduled: i8,
     n_success: i8,
     t_total_elapsed: i8,
@@ -921,11 +928,11 @@ async fn test_metric() {
     assert_eq!(3, m.n_success);
     assert_eq!(6, m.t_total_elapsed);
     assert_eq!(2, m.t_maximum_elapsed);
-    assert_eq!(2,  m.t_minimum_elapsed);
-    assert_eq!(2,  m.t_average_elapsed);
-    assert_eq!(0,  m.n_error);
-    assert_eq!(0,  m.n_failure_of_unlock);
-    assert_eq!(0,  m.n_failure_of_lock);
+    assert_eq!(2, m.t_minimum_elapsed);
+    assert_eq!(2, m.t_average_elapsed);
+    assert_eq!(0, m.n_error);
+    assert_eq!(0, m.n_failure_of_unlock);
+    assert_eq!(0, m.n_failure_of_lock);
     {
         let mut guard = EIGHT.write().await;
         *guard = 0;

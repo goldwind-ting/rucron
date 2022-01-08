@@ -1,18 +1,14 @@
 extern crate rucron;
 
-use chrono::{DateTime, Duration, Local};
 use rand::Rng;
 use redis::{Client, Commands};
 use rucron::{
-    execute, get_metric_with_name, ArgStorage, EmptyTask, Locker, Metric, RucronError, Scheduler
+    execute, get_metric_with_name, ArgStorage, EmptyTask, Locker, RucronError, Scheduler,
 };
-use std::{
-    error::Error,
-    sync::{atomic::Ordering, Arc},
-};
+use std::{error::Error, sync::Arc};
 use tokio::sync::mpsc::channel;
 
-/// Distributed lock implementation with
+/// Distributed locks with redis
 #[derive(Clone)]
 struct RedisLocker {
     client: Client,
@@ -49,9 +45,8 @@ fn gen_int() -> u64 {
     sec as u64
 }
 
-async fn learn_rust() -> Result<(), Box<dyn Error>> {
+async fn a_job() -> Result<(), Box<dyn Error>> {
     let (tx, mut rx) = channel(1);
-    println!("I am learning rust!");
     let sec = gen_int();
     tokio::spawn(async move {
         std::thread::sleep(std::time::Duration::from_secs(sec as u64));
@@ -64,26 +59,9 @@ async fn learn_rust() -> Result<(), Box<dyn Error>> {
 }
 
 async fn record_metric() -> Result<(), Box<dyn Error>> {
-    let m = get_metric_with_name("learn_rust").unwrap();
+    let m = get_metric_with_name("a_job").unwrap();
     println!("{}", m);
     Ok(())
-}
-
-async fn counter() -> Result<(), Box<dyn Error>> {
-    std::thread::sleep(std::time::Duration::from_secs(2));
-    println!("counter");
-    Ok(())
-}
-
-fn once(m: &Metric, last: &DateTime<Local>) -> Duration {
-    let n = m.n_scheduled.load(Ordering::Relaxed);
-    if n < 1 {
-        Duration::seconds(2)
-    } else if n == 1 {
-        Duration::seconds(last.timestamp() * 2)
-    } else {
-        Duration::seconds(0)
-    }
 }
 
 #[tokio::main]
@@ -96,12 +74,11 @@ async fn main() {
         .second()
         .immediately_run()
         .need_lock()
-        .todo(execute(learn_rust))
+        .todo(execute(a_job))
         .await
         .every(5)
         .second()
         .todo(execute(record_metric))
         .await;
-    let sch = sch.by(once).need_lock().todo(execute(counter)).await;
     sch.start().await;
 }

@@ -264,7 +264,9 @@ impl Job {
     fn cmp_time_granularity(&self) -> Duration {
         self.time_unit.as_ref().map_or_else(
             || {
-                let f = self.interval_fn.expect("Please set time unit or provide interval_fn in [cmp_time_granularity].");
+                let f = self.interval_fn.expect(
+                    "Please set time unit or provide interval_fn in [cmp_time_granularity].",
+                );
                 f(&METRIC_STORAGE.get(&self.job_name).unwrap(), &self.last_run)
             },
             |tu| tu.granularity() * self.call_interval,
@@ -285,6 +287,7 @@ impl fmt::Debug for Job {
             .field("next_run", &self.next_run)
             .field("call_interval", &self.call_interval)
             .field("locker", &self.locker)
+            .field("n_threads", &self.n_threads)
             .finish()
     }
 }

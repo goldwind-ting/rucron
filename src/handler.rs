@@ -16,9 +16,9 @@ use std::{
 };
 
 /// The trait is the task to be run in fact, the task must be asynchronous.
-/// 
+///
 /// The function with no parameters and less than 16 parameters has implemented the trait.
-/// 
+///
 /// The `Scheduler` will call this function when a job is `runnable`.
 ///
 #[async_trait]
@@ -39,9 +39,8 @@ where
     }
 }
 
-
-/// `Scheduler` mangages all jobs by this trait. When a job is runnable, 
-/// 
+/// `Scheduler` mangages all jobs by this trait. When a job is runnable,
+///
 /// the `Schedluler` find recursively the job by name and parse arguments the job need from `args`.
 #[async_trait]
 pub trait JobHandler: Send + Sized + 'static {
@@ -50,7 +49,7 @@ pub trait JobHandler: Send + Sized + 'static {
 }
 
 /// Implement the trait to parse or get arguments from [`ArgStorage`].
-/// 
+///
 /// The [`Scheduler`] will call `parse_args` and pass arguments to `job` when run job.
 /// # Examples
 ///
@@ -131,7 +130,6 @@ impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13);
 impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14);
 impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15);
 impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16);
-
 
 /// `Task` stores runtime parameters of a job which name is [`name`].
 #[derive(Debug, Clone)]
@@ -222,22 +220,21 @@ pub struct ExecutorWrapper<E, T> {
     _marker: PhantomData<T>,
 }
 
-
-/// Create a `ExecutorWrapper` and add another job to the `Scheduler`.
-/// 
+/// Create a `ExecutorWrapper` and add this job to the `Scheduler`.
+///
 /// - `executor is the job to be run.
-/// 
- /// # Panics
+///
+/// # Panics
 ///
 /// Panics if cann't parse name of [`E`] by `type_name`.
-/// 
+///
 /// # Examples
-/// 
+///
 /// ```
 /// use rucron::{execute, Scheduler, EmptyTask};
 /// use std::error::Error;
 /// use std::sync::Arc;
-/// 
+///
 /// async fn foo() -> Result<(), Box<dyn Error>> {
 ///     println!("{}", "foo");
 ///     Ok(())
@@ -301,11 +298,11 @@ where
 }
 
 /// The storage  stores all the arguments that [`jobs`] needed.
-/// 
+///
 /// It uses the extensions to store arguments, see the [docs] for more details.
-/// 
+///
 /// [docs]: https://docs.rs/http/latest/http/struct.Extensions.html
-/// 
+///
 #[derive(Debug)]
 pub struct ArgStorage(Extensions);
 
