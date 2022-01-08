@@ -7,7 +7,6 @@ pub(crate) enum NumberType {
     Lock,
 }
 
-
 /// `Metric` record various metrics generated in the runtime.  
 /// - `n_scheduled` shows total number of times the job has been scheduled.
 /// - `n_success` shows total successfully run times.
@@ -18,7 +17,7 @@ pub(crate) enum NumberType {
 /// - `n_error` shows total numbers of `error`.
 /// - `n_failure_of_unlock` shows total numbers.
 /// - `n_failure_of_lock` shows total numbers.
-/// 
+///
 #[derive(Debug, Serialize)]
 pub struct Metric {
     pub n_scheduled: AtomicUsize,
