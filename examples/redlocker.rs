@@ -1,13 +1,15 @@
 extern crate rucron;
 
-use redis::{Client, Commands, RedisError};
-use rucron::locker::Locker;
-use rucron::Scheduler;
-use std::fs::OpenOptions;
-use std::io::prelude::*;
+use rand::Rng;
+use redis::{Client, Commands};
+use rucron::{
+    execute, get_metric_with_name, ArgStorage, EmptyTask, Locker, RucronError, Scheduler,
+};
+use std::{error::Error, sync::Arc};
 use tokio::sync::mpsc::channel;
 
-/// Distributed lock implementation with
+/// Distributed locks with redis
+#[derive(Clone)]
 struct RedisLocker {
     client: Client,
 }
@@ -21,52 +23,62 @@ impl RedisLocker {
 }
 
 impl Locker for RedisLocker {
-    type Error = RedisError;
-    fn lock(&self, key: &str) -> Result<bool, Self::Error> {
-        let mut con = self.client.get_connection()?;
-        con.set_nx(key, 1)
+    fn lock(&self, key: &str, _storage: Arc<ArgStorage>) -> Result<bool, RucronError> {
+        let mut con = self.client.get_connection().unwrap();
+        match con.set_nx::<&str, i8, bool>(key, 1) {
+            Err(e) => Err(RucronError::LockError(e.to_string())),
+            Ok(b) => Ok(b),
+        }
     }
-    fn unlock(&self, key: &str) -> Result<bool, Self::Error> {
-        let mut con = self.client.get_connection()?;
-        con.expire(key, 0)
+    fn unlock(&self, key: &str, _storage: Arc<ArgStorage>) -> Result<bool, RucronError> {
+        let mut con = self.client.get_connection().unwrap();
+        match con.del::<&str, bool>(key) {
+            Err(e) => Err(RucronError::UnLockError(e.to_string())),
+            Ok(b) => Ok(b),
+        }
     }
 }
 
-async fn learn_rust() {
+fn gen_int() -> u64 {
+    let mut rng = rand::thread_rng();
+    let sec = rng.gen_range(8..14);
+    sec as u64
+}
+
+async fn a_job() -> Result<(), Box<dyn Error>> {
     let (tx, mut rx) = channel(1);
-    println!("I am learning rust!");
+    let sec = gen_int();
     tokio::spawn(async move {
-        std::thread::sleep(std::time::Duration::from_secs(10));
+        std::thread::sleep(std::time::Duration::from_secs(sec as u64));
         tx.send(1).await.unwrap();
     });
     if let Some(v) = rx.recv().await {
         println!("end job! {}", v);
     };
+    Ok(())
 }
 
-fn err_callback(err: RedisError) {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .append(true)
-        .open("./error.log")
-        .unwrap();
-
-    if let Err(e) = writeln!(file, "{}", err.to_string()) {
-        panic!("couldn't write to log {}", e.to_string())
-    }
+async fn record_metric() -> Result<(), Box<dyn Error>> {
+    let m = get_metric_with_name("a_job").unwrap();
+    println!("{}", m);
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() {
     let rl = RedisLocker::new();
-    let mut sch = Scheduler::<(), RedisLocker>::new(1, 10);
-    sch.every(10)
-        .await
+    let mut sch = Scheduler::<EmptyTask, RedisLocker>::new(1, 10);
+    sch.set_locker(rl);
+    let sch = sch
+        .every(15)
         .second()
+        .immediately_run()
+        .need_lock()
+        .todo(execute(a_job))
         .await
-        .with_opts(true, Some(Box::new(err_callback)), Some(rl))
-        .await
-        .todo(learn_rust)
+        .every(5)
+        .second()
+        .todo(execute(record_metric))
         .await;
     sch.start().await;
 }

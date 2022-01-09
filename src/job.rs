@@ -1,10 +1,7 @@
 use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Weekday};
-use futures::future::{BoxFuture, Future};
-use std::{any::type_name, fmt, panic, sync::Arc};
-use tokio::sync::RwLock;
+use std::{fmt, sync::atomic::Ordering};
 
-use crate::locker::Locker;
-
+use crate::{metric::Metric, METRIC_STORAGE};
 /// Time unit.
 pub(crate) enum TimeUnit {
     Second,
@@ -15,6 +12,7 @@ pub(crate) enum TimeUnit {
 }
 
 impl TimeUnit {
+    #[inline(always)]
     fn granularity(&self) -> Duration {
         match self {
             Self::Second => Duration::seconds(1),
@@ -24,6 +22,7 @@ impl TimeUnit {
             Self::Week => Duration::weeks(1),
         }
     }
+    #[inline(always)]
     fn number_from_zero(&self) -> i8 {
         match self {
             Self::Second => 0,
@@ -47,71 +46,38 @@ impl fmt::Debug for TimeUnit {
     }
 }
 
-struct JobArcHandler<R, L>
-where
-    R: 'static + Send + Sync,
-    L: 'static + Send + Sync + Locker,
-{
-    // scheduled function or job.
-    job: Option<Box<dyn Fn() -> BoxFuture<'static, R> + Send + Sync + 'static>>,
-    // distributed lock.
-    locker: Option<L>,
-    // error handeler used by Locker.
-    err_callback: Box<dyn Fn(<L as Locker>::Error) + Send + Sync + 'static>,
-}
-
-impl<R, L> JobArcHandler<R, L>
-where
-    R: 'static + Send + Sync,
-    L: 'static + Send + Sync + Locker,
-{
-    fn new() -> Self {
-        Self {
-            job: None,
-            locker: None,
-            err_callback: Box::new(|e| {
-                println!("{:?}", e);
-            }),
-        }
-    }
-}
-
 /// A periodic job used by Scheduler.
-pub struct Job<R, L>
-where
-    R: 'static + Send + Sync,
-    L: 'static + Send + Sync + Locker,
-{
-    // pause interval * unit between runs
+pub struct Job {
+    /// Pause `interval * unit` seconds between runs
     call_interval: i32,
-    // datetime of next run.
+    /// Datetime of next run.
     next_run: DateTime<Local>,
-    // datetime of last run.
+    /// Datetime of last run.
     last_run: DateTime<Local>,
-    // time unit.
+    /// Time unit.
     time_unit: Option<TimeUnit>,
-    // wheather run at specific time
+    /// Wheather run at specific time
     is_at: bool,
-    // specific day of the week to start on.
+    /// Specific day of the week to start on.
     weekday: Option<Weekday>,
-    // specific time of the day to start on.
+    /// Specific time of the day to start on.
     at_time: Option<Duration>,
-    // wheather run at job immediately.
+    /// Wheather run at job immediately.
     is_immediately_run: bool,
-    // job name or function name.
+    /// Job name or function name.
     job_name: String,
-    job_core: Arc<RwLock<JobArcHandler<R, L>>>,
+    /// A distributed locker,
+    locker: bool,
+    /// This function returns a `Duration` which is equal to `next_time` minus `last_time`.
+    interval_fn: Option<fn(&Metric, &DateTime<Local>) -> Duration>,
+    /// Numbers of thread to run a job parallely
+    n_threads: u8,
 }
 
-impl<R, L> Job<R, L>
-where
-    R: 'static + Send + Sync,
-    L: 'static + Send + Sync + Locker,
-{
-    pub(crate) fn new(call_interval: i32, is_at: bool) -> Job<R, L> {
+impl Job {
+    pub(crate) fn new(call_interval: i32, is_at: bool) -> Job {
         let now = Local::now();
         Job {
-            job_core: Arc::new(RwLock::new(JobArcHandler::new())),
             call_interval,
             next_run: now,
             last_run: now,
@@ -121,78 +87,93 @@ where
             at_time: None,
             is_at,
             job_name: "".into(),
+            locker: false,
+            interval_fn: None,
+            n_threads: 1,
         }
     }
 
+    #[inline(always)]
     pub(crate) fn get_job_name(&self) -> String {
         self.job_name.clone()
     }
 
-    pub(crate) async fn set_job<F>(&mut self, f: fn() -> F, unlock: bool)
-    where
-        F: Future<Output = R> + Send + 'static,
-    {
-        if let None = self.time_unit {
-            panic!("must set time unit!");
-        }
-        if self.is_at && self.at_time.is_none() && self.weekday.is_none() {
-            panic!("please set run time of job: day or weekday!");
-        }
-        {
-            let mut job_guard = self.job_core.write().await;
-            if unlock {
-                (*job_guard).locker.as_ref().and_then(|l| {
-                    if let Err(e) = l.unlock(&self.job_name[..]) {
-                        panic!("FAILED TO UNLOCK, {}", e);
-                    };
-                    Some(1)
-                });
-            }
-            (*job_guard).job = Some(Box::new(move || Box::pin(f())));
-        }
-        let job_name = type_name::<F>();
-        let tokens: Vec<&str> = job_name.split("::").collect();
-        match (*tokens).get(tokens.len() - 2) {
-            None => panic!("INVALID JOB NAME: {:?}", tokens),
-            Some(s) => {
-                self.job_name = (*s).into();
-            }
-        };
-        if self.is_immediately_run {
-            self.run().await;
-        }
-        self.schedule_run_time();
+    #[inline(always)]
+    pub(crate) fn set_name(&mut self, name: String) {
+        self.job_name = name;
     }
 
+    #[inline(always)]
+    pub(crate) fn need_locker(&mut self) {
+        self.locker = true;
+    }
+
+    #[inline(always)]
+    pub(crate) fn threads(&mut self, n: u8) {
+        self.n_threads = n;
+    }
+
+    #[inline(always)]
+    pub(crate) fn is_need_lock(&self) -> bool {
+        self.locker
+    }
+
+    #[inline(always)]
+    pub(crate) fn n_threads(&self) -> u8 {
+        self.n_threads
+    }
+
+    #[inline(always)]
     pub(crate) fn set_unit(&mut self, unit: TimeUnit) {
         self.time_unit = Some(unit);
     }
 
-    pub(crate) fn get_is_at(&self) -> bool {
+    #[inline(always)]
+    pub(crate) fn set_interval_fn(&mut self, f: fn(&Metric, &DateTime<Local>) -> Duration) {
+        self.interval_fn = Some(f);
+    }
+
+    #[inline(always)]
+    pub(crate) fn has_interval_fn(&self) -> bool {
+        self.interval_fn.is_some()
+    }
+
+    #[inline(always)]
+    pub(crate) fn get_unit(&self) -> Option<&TimeUnit> {
+        self.time_unit.as_ref()
+    }
+
+    #[inline(always)]
+    pub(crate) fn is_at(&self) -> bool {
         self.is_at
     }
 
-    #[inline]
+    #[inline(always)]
+    pub(crate) fn get_at_time(&self) -> Option<Duration> {
+        self.at_time
+    }
+
+    #[inline(always)]
     pub(crate) fn immediately_run(&mut self) {
         self.is_immediately_run = true
     }
 
-    #[inline]
-    pub(crate) fn runable(&self) -> bool {
+    #[inline(always)]
+    pub(crate) fn get_immediately_run(&self) -> bool {
+        self.is_immediately_run
+    }
+
+    #[inline(always)]
+    pub(crate) fn runnable(&self) -> bool {
         self.next_run.le(&Local::now())
     }
 
+    #[inline(always)]
     pub(crate) fn set_at_time(&mut self, h: i64, m: i64, s: i64) {
         self.at_time = Some(Duration::hours(h) + Duration::minutes(m) + Duration::seconds(s));
     }
 
-    #[inline]
-    pub(crate) async fn set_locker(&mut self, locker: L) {
-        let mut job_guard = self.job_core.write().await;
-        (*job_guard).locker = Some(locker);
-    }
-
-    #[inline]
+    #[inline(always)]
     pub(crate) fn set_weekday(&mut self, w: i64) {
         self.weekday = match w {
             1 => Some(Weekday::Mon),
@@ -206,28 +187,22 @@ where
         };
     }
 
-    pub(crate) async fn set_err_callback(
-        &mut self,
-        f: Box<dyn Fn(<L as Locker>::Error) + Send + Sync + 'static>,
-    ) {
-        let mut job_guard = self.job_core.write().await;
-        (*job_guard).err_callback = f;
-    }
-
+    #[inline(always)]
     pub(crate) fn get_next_run(&self) -> DateTime<Local> {
         self.next_run
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn get_last_run(&self) -> DateTime<Local> {
         self.last_run
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn get_weekday(&self) -> Option<Weekday> {
         self.weekday
     }
 
+    #[inline(always)]
     pub(crate) fn get_time_unit(&self) -> Option<i8> {
         self.time_unit
             .as_ref()
@@ -236,10 +211,8 @@ where
 
     /// Compute the time when the job should run next time.
     pub(crate) fn schedule_run_time(&mut self) {
-        let now = Local::now();
-        self.last_run = now;
         let granularity = self.cmp_time_granularity();
-        self.next_run = match self.time_unit {
+        let mut next_run = match self.time_unit {
             Some(TimeUnit::Second) | Some(TimeUnit::Minute) | Some(TimeUnit::Hour) => self.last_run,
             Some(TimeUnit::Day) => {
                 let mut midnight = Local
@@ -261,6 +234,7 @@ where
                     )
                     .and_hms(0, 0, 0);
                 midnight = midnight + self.at_time.unwrap_or(Duration::zero());
+                println!("name: {}, weekday: {:?}", self.job_name, self.weekday);
                 let deviation: i32 = self.weekday.unwrap().number_from_sunday() as i32
                     - midnight.weekday().number_from_sunday() as i32;
                 if deviation != 0 {
@@ -268,77 +242,39 @@ where
                 }
                 midnight
             }
-            None => self.last_run, // todo: handle this condition
+            None => self.last_run + granularity, // todo: handle this condition
         };
-
-        while self.next_run.le(&now) || self.next_run.le(&self.last_run) {
-            self.next_run = self.next_run + granularity;
+        let now = Local::now();
+        while (next_run.le(&now) || next_run.le(&self.last_run)) && self.interval_fn.is_none() {
+            next_run = next_run + granularity;
         }
-    }
-
-    fn cmp_time_granularity(&self) -> Duration {
-        self.time_unit
-            .as_ref()
-            .and_then(|tu| Some(tu.granularity() * self.call_interval))
-            .unwrap()
-    }
-
-    /// Run job without locking and unlocking.
-    async fn run_without_locker(&self) {
-        let job = self.job_core.clone();
-        tokio::spawn(async move {
-            let job_guard = job.read().await;
-            if let Some(f) = job_guard.job.as_ref() {
-                f().await;
-            }
-        });
-    }
-
-    /// Run job with locking and unlocking.
-    async fn run_with_locker(&self, key: String) {
-        let job = self.job_core.clone();
-
-        tokio::spawn(async move {
-            let job_guard = job.read().await;
-            let f = job_guard.job.as_ref().unwrap();
-            let locker = job_guard.locker.as_ref().unwrap();
-            let callback = &job_guard.err_callback;
-            f().await;
-            if let Err(e) = locker.unlock(&key[..]) {
-                callback(e);
-            };
-        });
-    }
-
-    pub(crate) async fn run(&self) {
-        let job = self.job_core.read().await;
-        let locker = job.locker.as_ref();
-        match locker {
-            Some(locker) => match locker.lock(&self.job_name[..]) {
-                Err(e) => {
-                    let callback = &job.err_callback;
-                    callback(e);
-                }
-                Ok(flag) if flag => {
-                    self.run_with_locker(self.job_name.clone()).await;
-                }
-                _ => {
-                    eprintln!("CAN'T UNLOCK!");
-                    return;
-                }
+        if next_run.gt(&self.next_run) {
+            self.last_run = self.next_run;
+            self.next_run = next_run;
+        }
+        METRIC_STORAGE.get(&self.job_name).map_or_else(
+            || unreachable!("unreachable"),
+            |m| {
+                m.n_scheduled.fetch_add(1, Ordering::SeqCst);
             },
-            None => {
-                self.run_without_locker().await;
-            }
-        }
+        );
+    }
+
+    #[inline(always)]
+    fn cmp_time_granularity(&self) -> Duration {
+        self.time_unit.as_ref().map_or_else(
+            || {
+                let f = self.interval_fn.expect(
+                    "Please set time unit or provide interval_fn in [cmp_time_granularity].",
+                );
+                f(&METRIC_STORAGE.get(&self.job_name).unwrap(), &self.last_run)
+            },
+            |tu| tu.granularity() * self.call_interval,
+        )
     }
 }
 
-impl<R, L> fmt::Debug for Job<R, L>
-where
-    R: 'static + Send + Sync,
-    L: 'static + Send + Sync + Locker,
-{
+impl fmt::Debug for Job {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         fmt.debug_struct("Job")
             .field("job_name", &self.job_name)
@@ -350,6 +286,8 @@ where
             .field("last_run", &self.last_run)
             .field("next_run", &self.next_run)
             .field("call_interval", &self.call_interval)
+            .field("locker", &self.locker)
+            .field("n_threads", &self.n_threads)
             .finish()
     }
 }

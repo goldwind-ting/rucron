@@ -1,9 +1,12 @@
-// cargo test -- --test-threads 1
-
-use chrono::{Datelike, Local, Timelike};
-use rucron::{locker::Locker, scheduler::Scheduler};
-use std::io::{prelude::*, Error as ioerr};
-use std::{fs::File, path::Path};
+use async_trait::async_trait;
+use chrono::Duration as duration;
+use chrono::{DateTime, Datelike, Local, Timelike};
+use rucron::handler::JobHandler;
+use rucron::{
+    execute, get_metric_with_name, ArgStorage, EmptyTask, Locker, Metric, ParseArgs, RucronError,
+    Scheduler,
+};
+use std::{error::Error, sync::atomic::Ordering, sync::Arc};
 use tokio::sync::{
     mpsc::{channel, Sender},
     RwLock,
@@ -11,6 +14,7 @@ use tokio::sync::{
 use tokio::time::{sleep, Duration};
 #[macro_use]
 extern crate lazy_static;
+use serde::Deserialize;
 
 lazy_static! {
     static ref BROADCAST_CONNECT: RwLock<Option<Sender<bool>>> = RwLock::new(None);
@@ -22,20 +26,19 @@ lazy_static! {
     static ref TIME_COUNAINER_ERROR_CALLBACK: RwLock<Vec<i64>> = RwLock::new(Vec::new());
     static ref TIME_COUNAINER_MINUTE_INTERVAL: RwLock<Vec<i64>> = RwLock::new(Vec::new());
     static ref TIME_COUNAINER_IMMEDIATIALY: RwLock<Vec<i64>> = RwLock::new(Vec::new());
-    static ref ERROR_LOG_FILE: &'static str = "error.log";
+    static ref EIGHT: RwLock<i8> = RwLock::new(0);
     static ref LOCKED_FLAG: RwLock<bool> = RwLock::new(false);
     static ref UNLOCKED: RwLock<bool> = RwLock::new(false);
 }
 
 macro_rules! interval_job {
     ($fn_name:ident, $t:expr, $times:expr) => {
-        async fn $fn_name() {
+        async fn $fn_name() -> Result<(), Box<dyn Error>> {
             let now = Local::now().timestamp();
             {
                 let mut guard = $t.write().await;
                 guard.push(now);
             }
-
             {
                 let guard = $t.read().await;
                 if $times.le(&(guard.len() as i8)) {
@@ -43,18 +46,19 @@ macro_rules! interval_job {
                     let _ = tx.as_ref().unwrap().send(true).await.unwrap();
                 }
             }
+            Ok(())
         }
     };
 }
 
+#[derive(Clone)]
 struct RedisLockerOk;
 
 impl Locker for RedisLockerOk {
-    type Error = ioerr;
-    fn lock(&self, _key: &str) -> Result<bool, Self::Error> {
+    fn lock(&self, _key: &str, _storage: Arc<ArgStorage>) -> Result<bool, RucronError> {
         Ok(true)
     }
-    fn unlock(&self, _key: &str) -> Result<bool, Self::Error> {
+    fn unlock(&self, _key: &str, _storage: Arc<ArgStorage>) -> Result<bool, RucronError> {
         Ok(true)
     }
 }
@@ -62,8 +66,7 @@ impl Locker for RedisLockerOk {
 struct LockedLocker;
 
 impl Locker for LockedLocker {
-    type Error = ioerr;
-    fn lock(&self, _key: &str) -> Result<bool, Self::Error> {
+    fn lock(&self, _key: &str, _storage: Arc<ArgStorage>) -> Result<bool, RucronError> {
         let mut guard = LOCKED_FLAG.try_write().unwrap();
         if *guard {
             *guard = !*guard;
@@ -71,7 +74,7 @@ impl Locker for LockedLocker {
         }
         Ok(false)
     }
-    fn unlock(&self, _key: &str) -> Result<bool, Self::Error> {
+    fn unlock(&self, _key: &str, _storage: Arc<ArgStorage>) -> Result<bool, RucronError> {
         let mut guard = LOCKED_FLAG.try_write().unwrap();
         println!("unlock {}", guard);
         if !*guard {
@@ -82,59 +85,80 @@ impl Locker for LockedLocker {
     }
 }
 
-struct RedisLockerErr;
+#[derive(Clone)]
+struct RedisLockerFlase;
 
-impl Locker for RedisLockerErr {
-    type Error = ioerr;
-    fn lock(&self, _key: &str) -> Result<bool, Self::Error> {
-        #[cfg(not(windows))]
-        return Err(std::io::Error::from_raw_os_error(22));
-        #[cfg(windows)]
-        return return Err(std::io::Error::from_raw_os_error(10022));
+impl Locker for RedisLockerFlase {
+    fn lock(&self, _key: &str, _storage: Arc<ArgStorage>) -> Result<bool, RucronError> {
+        Ok(false)
     }
-    fn unlock(&self, _key: &str) -> Result<bool, Self::Error> {
-        Ok(true)
+    fn unlock(&self, _key: &str, _storage: Arc<ArgStorage>) -> Result<bool, RucronError> {
+        Ok(false)
     }
 }
 
-async fn learn_rust() {
+async fn learn_rust() -> Result<(), Box<dyn Error>> {
+    sleep(Duration::from_secs(1)).await;
     println!("I am learning rust!");
+    Ok(())
 }
 
-async fn sing() {
+async fn sing() -> Result<(), Box<dyn Error>> {
     println!("I am singing!");
+    Ok(())
 }
 
-async fn cooking() {
+async fn cooking() -> Result<(), Box<dyn Error>> {
+    sleep(Duration::from_secs(1)).await;
     println!("I am cooking!");
+    Ok(())
 }
 
-async fn exercising() {
-    println!("I am exercising!");
+async fn error_job() -> Result<(), Box<dyn Error>> {
+    Err(Box::new(RucronError::NotFound))
 }
 
-async fn working() {
-    println!("I am working!");
+#[derive(Clone)]
+struct Person {
+    age: i32,
 }
 
-fn err_callback_mock(err: ioerr) {
-    let path = Path::new("./error.log");
-    let display = path.display();
-
-    let mut file = match File::create(&path) {
-        Err(e) => panic!("couldn't create {}: {}", display, e.to_string()),
-        Ok(file) => file,
-    };
-
-    match file.write_all(err.to_string().as_bytes()) {
-        Err(e) => {
-            panic!("couldn't write to {}: {}", display, e.to_string())
-        }
-        Ok(_) => {}
+#[async_trait]
+impl ParseArgs for Person {
+    type Err = std::io::Error;
+    async fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err> {
+        return Ok(args.get::<Person>().unwrap().clone());
     }
 }
 
-async fn start_scheldure<L: Locker + 'static + Send + Sync>(sch: Scheduler<(), L>) {
+async fn employee(p: Person) -> Result<(), Box<dyn Error>> {
+    sleep(Duration::from_secs(1)).await;
+    println!("I am {} years old", p.age);
+    Ok(())
+}
+
+async fn working() -> Result<(), Box<dyn Error>> {
+    println!("I am working!");
+    Ok(())
+}
+
+async fn is_eight_years_old(p: Person) -> Result<(), Box<dyn Error>> {
+    if p.age != 8 {
+        let mut guard = EIGHT.write().await;
+        *guard = 8;
+    } else {
+        let mut guard = EIGHT.write().await;
+        *guard = 0;
+    };
+    Ok(())
+}
+
+async fn start_scheldure<
+    T: JobHandler + 'static + Send + Sync + Clone,
+    L: Locker + 'static + Send + Sync + Clone,
+>(
+    sch: Scheduler<T, L>,
+) {
     let (tx, mut rx) = channel(1);
     *BROADCAST_CONNECT.write().await = Some(tx);
     tokio::spawn(async move {
@@ -148,8 +172,11 @@ async fn start_scheldure<L: Locker + 'static + Send + Sync>(sch: Scheduler<(), L
     }
 }
 
-async fn start_scheldure_with_cancel<L: Locker + 'static + Send + Sync>(
-    sch: Scheduler<(), L>,
+async fn start_scheldure_with_cancel<
+    T: JobHandler + 'static + Send + Sync + Clone,
+    L: Locker + 'static + Send + Sync + Clone,
+>(
+    sch: Scheduler<T, L>,
     interval: u64,
 ) {
     let (tx, mut rx) = channel(1);
@@ -175,11 +202,7 @@ interval_job!(
     TIME_COUNAINER_SECOND_INTERVAL,
     EXECUTION_TIMES
 );
-interval_job!(
-    do_error_callback_job,
-    TIME_COUNAINER_ERROR_CALLBACK,
-    EXECUTION_TIMES
-);
+
 interval_job!(do_lockerok_job, TIME_COUNAINER_LOCKEROK, EXECUTION_TIMES);
 interval_job!(
     do_minute_interval_job,
@@ -194,17 +217,17 @@ interval_job!(
 
 #[tokio::test]
 async fn test_second_interval() {
-    let mut sch = Scheduler::<(), RedisLockerOk>::new(0, 10);
-    sch.every(*INTERVAL)
-        .await
+    let sch = Scheduler::<EmptyTask, ()>::new(0, 10);
+    let sch = sch
+        .every(*INTERVAL)
         .second()
-        .await
-        .todo(do_second_interval_job)
+        .todo(execute(do_second_interval_job))
         .await;
     start_scheldure(sch).await;
     let guard = TIME_COUNAINER_SECOND_INTERVAL.read().await;
     let leng = guard.len();
     assert_eq!(guard.len(), 3);
+    println!("guard: {:?}", guard);
     for i in 1..leng {
         assert!((guard[i] - guard[i - 1]) as i32 >= *INTERVAL);
         assert!((guard[i] - guard[i - 1]) as i32 <= *INTERVAL + 1);
@@ -213,12 +236,11 @@ async fn test_second_interval() {
 
 #[tokio::test]
 async fn test_minute_interval() {
-    let mut sch = Scheduler::<(), RedisLockerOk>::new(1, 10);
-    sch.every(*INTERVAL / 2)
-        .await
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    let sch = sch
+        .every(*INTERVAL / 2)
         .minute()
-        .await
-        .todo(do_minute_interval_job)
+        .todo(execute(do_minute_interval_job))
         .await;
     start_scheldure(sch).await;
     let guard = TIME_COUNAINER_MINUTE_INTERVAL.read().await;
@@ -232,226 +254,122 @@ async fn test_minute_interval() {
 
 #[tokio::test]
 async fn test_idle_seconds() {
-    let mut sch = Scheduler::<(), RedisLockerOk>::new(1, 10);
-    sch.every(2)
-        .await
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    let sch = sch
+        .every(2)
         .second()
+        .todo(execute(learn_rust))
         .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(learn_rust)
-        .await;
-    sch.every(8)
-        .await
+        .every(8)
         .second()
-        .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(exercising)
+        .todo(execute(sing))
         .await;
 
-    assert!(sch.idle_seconds().await.is_some());
-    let idle = sch.idle_seconds().await.unwrap();
+    assert!(sch.idle_seconds().is_some());
+    let idle = sch.idle_seconds().unwrap();
     let now = Local::now().timestamp();
     assert_eq!(idle - now, 2);
-    sch.every(1)
-        .await
-        .second()
-        .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(sing)
-        .await;
-    let idle = sch.idle_seconds().await.unwrap();
+    let sch = sch.every(1).second().todo(execute(sing)).await;
+    let idle = sch.idle_seconds().unwrap();
     let now = Local::now().timestamp();
     assert_eq!(idle - now, 1);
 }
 
 #[tokio::test]
 async fn test_get_job_names() {
-    let mut sch = Scheduler::<(), RedisLockerOk>::new(1, 10);
-    sch.every(2)
-        .await
+    let programmer = Person { age: 18 };
+    let mut storage = ArgStorage::new();
+    storage.insert(programmer);
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    let mut sch = sch
+        .every(2)
         .second()
+        .todo(execute(learn_rust))
         .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(learn_rust)
-        .await;
-
-    sch.every(4)
-        .await
+        .every(4)
         .second()
+        .todo(execute(sing))
         .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(sing)
-        .await;
-
-    sch.every(6)
-        .await
+        .every(6)
         .second()
+        .todo(execute(cooking))
         .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(cooking)
-        .await;
-
-    sch.every(8)
-        .await
+        .every(8)
         .second()
-        .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(exercising)
+        .todo(execute(employee))
         .await;
-    let names = sch.get_job_names().await;
-    assert_eq!(names, vec!["learn_rust", "sing", "cooking", "exercising"]);
+    sch.set_arg_storage(storage);
+    let names = sch.get_job_names();
+    assert_eq!(names, vec!["learn_rust", "sing", "cooking", "employee"]);
 }
 
 #[tokio::test]
 async fn test_is_scheduled() {
-    let mut sch = Scheduler::<(), RedisLockerOk>::new(1, 10);
-    sch.every(2)
-        .await
-        .second()
-        .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(learn_rust)
-        .await;
-    sch.every(8)
-        .await
-        .second()
-        .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(exercising)
-        .await;
-    assert!(sch.is_scheduled(learn_rust).await);
-    assert!(sch.is_scheduled(exercising).await);
+    let sch = Scheduler::new(2, 10);
+    let sch = sch.every(2).second().todo(execute(learn_rust)).await;
+    let sch = sch.every(3).second().todo(execute(cooking)).await;
+    let mut sch = sch.every(3).second().todo(execute(employee)).await;
+    sch.set_locker(());
+    let mut storage = ArgStorage::new();
+    storage.insert(Person { age: 7 });
+    sch.set_arg_storage(storage);
+    assert!(sch.is_scheduled("learn_rust"));
+    assert!(sch.is_scheduled("cooking"));
+    assert!(sch.is_scheduled("employee"));
+    assert_eq!(
+        vec!["learn_rust", "cooking", "employee"],
+        sch.get_job_names()
+    );
 }
 
 #[tokio::test]
 async fn test_length() {
-    let mut sch = Scheduler::<(), RedisLockerOk>::new(1, 10);
-    sch.every(2)
-        .await
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    let mut sch = sch
+        .every(2)
         .second()
+        .todo(execute(learn_rust))
         .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(learn_rust)
-        .await;
-    sch.every(8)
-        .await
+        .every(8)
         .second()
-        .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(exercising)
+        .todo(execute(employee))
         .await;
 
     assert_eq!(sch.len(), 2);
-    assert!(sch.is_scheduled(exercising).await);
-    assert!(sch.is_scheduled(learn_rust).await);
+    assert!(sch.is_scheduled("learn_rust"));
+    assert!(sch.is_scheduled("employee"));
+    assert!(!sch.is_scheduled("cooking"));
 
-    sch.cancel_job("exercising".into()).await;
-    assert!(!sch.is_scheduled(exercising).await);
+    sch.cancel_job("employee");
+    assert!(!sch.is_scheduled("employee"));
 }
 
 #[tokio::test]
 async fn test_next_run() {
-    let mut sch = Scheduler::<(), RedisLockerOk>::new(1, 10);
-    sch.every(60)
-        .await
-        .second()
-        .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(learn_rust)
-        .await;
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    let sch = sch.every(60).second().todo(execute(learn_rust)).await;
 
-    let job = sch.next_run().await.unwrap();
+    let job = sch.next_run().unwrap();
     assert_eq!(job, String::from("learn_rust"));
-    sch.every(4)
-        .await
-        .second()
-        .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(sing)
-        .await;
-    let job = sch.next_run().await.unwrap();
+    let sch = sch.every(4).second().todo(execute(sing)).await;
+    let job = sch.next_run().unwrap();
     assert_eq!(job, String::from("sing"));
-    sch.every(6)
-        .await
-        .second()
-        .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(cooking)
-        .await;
+    let sch = sch.every(6).second().todo(execute(cooking)).await;
 
-    let job = sch.next_run().await.unwrap();
+    let job = sch.next_run().unwrap();
     assert_eq!(job, String::from("sing"));
 
-    sch.every(1)
-        .await
-        .second()
-        .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(exercising)
-        .await;
-    let job = sch.next_run().await.unwrap();
-    assert_eq!(job, String::from("exercising"));
-}
-
-#[tokio::test]
-async fn test_error_callback() {
-    let mut sch = Scheduler::<(), RedisLockerErr>::new(1, 10);
-    sch.every(2)
-        .await
-        .second()
-        .await
-        .with_opts(
-            false,
-            Some(Box::new(err_callback_mock)),
-            Some(RedisLockerErr),
-        )
-        .await
-        .todo(do_error_callback_job)
-        .await;
-    start_scheldure_with_cancel(sch, 2).await;
-
-    let path = Path::new(*ERROR_LOG_FILE);
-    assert!(path.exists());
-
-    let mut f = File::open(path).unwrap();
-    let mut buf = String::new();
-    f.read_to_string(&mut buf).unwrap();
-    #[cfg(not(windows))]
-    assert!(buf.contains("22"));
-    #[cfg(windows)]
-    assert!(buf.contains("10022"));
+    let sch = sch.every(1).second().todo(execute(employee)).await;
+    let job = sch.next_run().unwrap();
+    assert_eq!(job, String::from("employee"));
 }
 
 #[tokio::test]
 async fn test_locker_ok() {
-    let mut sch = Scheduler::<(), RedisLockerOk>::new(1, 10);
-    sch.every(2)
-        .await
-        .second()
-        .await
-        .with_opts(
-            false,
-            Some(Box::new(err_callback_mock)),
-            Some(RedisLockerOk),
-        )
-        .await
-        .todo(do_lockerok_job)
-        .await;
+    let locker = RedisLockerOk;
+    let mut sch = Scheduler::new(1, 10);
+    sch.set_locker(locker);
+    let sch = sch.every(2).second().todo(execute(do_lockerok_job)).await;
     start_scheldure(sch).await;
 
     let guard = TIME_COUNAINER_LOCKEROK.read().await;
@@ -464,19 +382,38 @@ async fn test_locker_ok() {
 }
 
 #[tokio::test]
+async fn test_fail_to_lock() {
+    let locker = RedisLockerFlase;
+    let mut sch = Scheduler::new(1, 10);
+    sch.set_locker(locker);
+    let sch = sch
+        .every(2)
+        .second()
+        .need_lock()
+        .todo(execute(do_lockerok_job))
+        .await;
+    tokio::spawn(async move {
+        sleep(Duration::from_secs(5)).await;
+        let tx = BROADCAST_CONNECT.read().await;
+        let _ = tx.as_ref().unwrap().send(true).await.unwrap();
+    });
+    start_scheldure(sch).await;
+
+    let guard = TIME_COUNAINER_LOCKEROK.read().await;
+
+    assert_eq!(guard.len(), 0);
+}
+
+#[tokio::test]
 async fn test_immediately_run() {
     let (tx, mut rx) = channel(1);
     *BROADCAST_CONNECT.write().await = Some(tx);
-    let mut sch = Scheduler::<(), RedisLockerOk>::new(1, 10);
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
     sch.every(2)
-        .await
         .second()
-        .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(true, None, None)
-        .await
-        .todo(immediately_job)
+        .immediately_run()
+        .todo(execute(immediately_job))
         .await;
-
     loop {
         sleep(Duration::from_micros(10)).await;
         if let Some(_) = rx.recv().await {
@@ -491,233 +428,251 @@ async fn test_immediately_run() {
 
 #[tokio::test]
 async fn test_every_time_unit() {
-    let mut sch = Scheduler::<(), RedisLockerOk>::new(1, 10);
-    sch.every(1).await.second().await.todo(learn_rust).await;
-    sch.every(1).await.minute().await.todo(sing).await;
-    sch.every(1).await.hour().await.todo(cooking).await;
-    sch.every(1)
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    let sch = sch
+        .every(1)
+        .second()
+        .todo(execute(learn_rust))
         .await
+        .every(1)
+        .minute()
+        .todo(execute(sing))
+        .await
+        .every(1)
+        .hour()
+        .todo(execute(cooking))
+        .await
+        .every(1)
         .day(0, 59, 59)
+        .todo(execute(employee))
         .await
-        .todo(exercising)
-        .await;
-    sch.every(1)
-        .await
+        .every(1)
         .week(1, 0, 59, 59)
-        .await
-        .todo(working)
+        .todo(execute(working))
         .await;
 
-    assert_eq!(sch.time_unit_with_name("learn_rust").await.unwrap(), 0);
-    assert_eq!(sch.time_unit_with_name("sing").await.unwrap(), 1);
-    assert_eq!(sch.time_unit_with_name("cooking").await.unwrap(), 2);
-    assert_eq!(sch.time_unit_with_name("exercising").await.unwrap(), 3);
-    assert_eq!(sch.time_unit_with_name("working").await.unwrap(), 4);
+    assert_eq!(sch.time_unit_with_name("learn_rust").unwrap(), 0);
+    assert_eq!(sch.time_unit_with_name("sing").unwrap(), 1);
+    assert_eq!(sch.time_unit_with_name("cooking").unwrap(), 2);
+    assert_eq!(sch.time_unit_with_name("employee").unwrap(), 3);
+    assert_eq!(sch.time_unit_with_name("working").unwrap(), 4);
+}
+
+#[tokio::test]
+async fn test_weekday_with_name() {
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    let sch = sch
+        .every(2)
+        .week(1, 0, 59, 59)
+        .todo(execute(learn_rust))
+        .await
+        .every(2)
+        .week(3, 0, 59, 59)
+        .todo(execute(cooking))
+        .await
+        .every(2)
+        .week(5, 0, 59, 59)
+        .todo(execute(employee))
+        .await
+        .every(2)
+        .week(7, 0, 59, 59)
+        .todo(execute(working))
+        .await
+        .every(1)
+        .second()
+        .todo(execute(sing))
+        .await;
+    assert_eq!(sch.weekday_with_name("learn_rust"), Some(1));
+    assert_eq!(sch.weekday_with_name("cooking"), Some(3));
+    assert_eq!(sch.weekday_with_name("employee"), Some(5));
+    assert_eq!(sch.weekday_with_name("working"), Some(7));
+    assert_eq!(sch.weekday_with_name("sing"), None);
 }
 
 #[tokio::test]
 async fn test_at_time_unit() {
-    let mut sch = Scheduler::<(), RedisLockerOk>::new(1, 10);
-    sch.at().await.day(0, 59, 59).await.todo(learn_rust).await;
-    sch.at().await.week(1, 0, 59, 59).await.todo(sing).await;
-    assert_eq!(sch.time_unit_with_name("learn_rust").await.unwrap(), 3);
-    assert_eq!(sch.time_unit_with_name("sing").await.unwrap(), 4);
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    let sch = sch
+        .at()
+        .day(0, 59, 59)
+        .todo(execute(learn_rust))
+        .await
+        .at()
+        .week(1, 0, 59, 59)
+        .todo(execute(sing))
+        .await;
+    assert_eq!(sch.time_unit_with_name("learn_rust").unwrap(), 3);
+    assert_eq!(sch.time_unit_with_name("sing").unwrap(), 4);
 }
 
 #[tokio::test]
 async fn test_next_run_with_name() {
-    let mut sch = Scheduler::<(), RedisLockerOk>::new(1, 10);
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
     let now = Local::now() + chrono::Duration::hours(1);
-    sch.every(1).await.hour().await.todo(learn_rust).await;
-    let next_run_time = sch.next_run_with_name("learn_rust").await.unwrap();
+    let sch = sch.every(1).hour().todo(execute(learn_rust)).await;
+    let next_run_time = sch.next_run_with_name("learn_rust").unwrap();
     assert_eq!(next_run_time, now.timestamp());
 }
 
 #[tokio::test]
 async fn test_last_run() {
-    let mut sch = Scheduler::<(), RedisLockerOk>::new(1, 10);
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
     let now = Local::now();
-    sch.every(1)
-        .await
-        .hour()
-        .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(true, None, None)
-        .await
-        .todo(learn_rust)
-        .await;
-    let last_run_time = sch.last_run_with_name("learn_rust").await.unwrap();
+    let sch = sch.every(1).hour().todo(execute(learn_rust)).await;
+    let last_run_time = sch.last_run_with_name("learn_rust").unwrap();
     assert_eq!(last_run_time, now.timestamp());
 }
 
 #[tokio::test]
 async fn test_every_day_job() {
-    let mut sch = Scheduler::<(), RedisLockerOk>::new(1, 10);
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
     let now = Local::now();
-    sch.every(2)
-        .await
+    let sch = sch
+        .every(2)
         .day(now.hour() as i64, now.minute() as i64, now.second() as i64)
-        .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(learn_rust)
+        .todo(execute(learn_rust))
         .await;
-    let learn_rust_time = sch.next_run_with_name("learn_rust").await.unwrap();
+    let learn_rust_time = sch.next_run_with_name("learn_rust").unwrap();
     assert_eq!(
         learn_rust_time,
         (now + chrono::Duration::days(2)).timestamp()
     );
 
     let after = now + chrono::Duration::minutes(10);
-    sch.every(1)
-        .await
+    let sch = sch
+        .every(1)
         .day(
             after.hour() as i64,
             after.minute() as i64,
             after.second() as i64,
         )
-        .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(sing)
+        .todo(execute(sing))
         .await;
 
-    let sing_time = sch.next_run_with_name("sing").await.unwrap();
+    let sing_time = sch.next_run_with_name("sing").unwrap();
     assert_eq!(after.timestamp(), sing_time);
 }
 
 #[tokio::test]
 async fn test_every_week_job() {
-    let mut sch = Scheduler::<(), RedisLockerOk>::new(1, 10);
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
     let now = Local::now();
-    sch.every(1)
-        .await
+    let sch = sch
+        .every(1)
         .week(
             now.weekday().number_from_monday() as i64,
             now.hour() as i64,
             now.minute() as i64,
             now.second() as i64,
         )
-        .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(learn_rust)
+        .todo(execute(learn_rust))
         .await;
-    let learn_rust_time = sch.next_run_with_name("learn_rust").await.unwrap();
+    let learn_rust_time = sch.next_run_with_name("learn_rust").unwrap();
     let expect_next_run = now + chrono::Duration::weeks(1);
     assert_eq!(learn_rust_time, expect_next_run.timestamp());
 
-    sch.every(1)
-        .await
+    let mut week = now.weekday().number_from_monday() as i64;
+    if week == 6 {
+        week = 7
+    } else {
+        week = (week + 1) % 7
+    }
+    let sch = sch
+        .every(1)
         .week(
-            (now.weekday().number_from_monday() as i64 + 1) % 7,
+            week,
             now.hour() as i64,
             now.minute() as i64,
             now.second() as i64,
         )
-        .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(sing)
+        .todo(execute(sing))
         .await;
-    let sing_time = sch.next_run_with_name("sing").await.unwrap();
+    let sing_time = sch.next_run_with_name("sing").unwrap();
     assert_eq!(learn_rust_time, sing_time + 6 * 24 * 60 * 60);
 }
 
 #[tokio::test]
 async fn test_at_week_job() {
-    let mut sch = Scheduler::<(), RedisLockerOk>::new(1, 10);
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
     let now = Local::now();
-    sch.at()
-        .await
+    let sch = sch
+        .at()
         .week(
             now.weekday().number_from_monday() as i64,
             now.hour() as i64,
             now.minute() as i64,
             now.second() as i64,
         )
-        .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(learn_rust)
+        .todo(execute(learn_rust))
         .await;
 
-    let learn_rust_time = sch.next_run_with_name("learn_rust").await.unwrap();
+    let learn_rust_time = sch.next_run_with_name("learn_rust").unwrap();
     let expect_next_run = now + chrono::Duration::weeks(1);
     assert_eq!(learn_rust_time, expect_next_run.timestamp());
 
-    sch.at()
-        .await
+    let mut week = now.weekday().number_from_monday() as i64;
+    if week == 6 {
+        week = 7
+    } else {
+        week = (week + 1) % 7
+    }
+
+    let sch = sch
+        .at()
         .week(
-            (now.weekday().number_from_monday() as i64 + 1) % 7,
+            week,
             now.hour() as i64,
             now.minute() as i64,
             now.second() as i64,
         )
-        .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(sing)
+        .todo(execute(sing))
         .await;
 
-    let sing_time = sch.next_run_with_name("sing").await.unwrap();
+    let sing_time = sch.next_run_with_name("sing").unwrap();
     assert_eq!(learn_rust_time, sing_time + 6 * 24 * 60 * 60);
 }
 
 #[tokio::test]
 async fn test_at_day_job() {
-    let mut sch = Scheduler::<(), RedisLockerOk>::new(1, 10);
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
     let now = Local::now();
-    sch.at()
-        .await
+    let sch = sch
+        .at()
         .day(now.hour() as i64, now.minute() as i64, now.second() as i64)
-        .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(learn_rust)
+        .todo(execute(learn_rust))
         .await;
 
-    let learn_rust_time = sch.next_run_with_name("learn_rust").await.unwrap();
+    let learn_rust_time = sch.next_run_with_name("learn_rust").unwrap();
     let expect_next_run = now + chrono::Duration::days(1);
     assert_eq!(learn_rust_time, expect_next_run.timestamp());
 
-    sch.at()
-        .await
+    let sch = sch
+        .at()
         .day(
             now.hour() as i64 + 1,
             now.minute() as i64,
             now.second() as i64,
         )
-        .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(sing)
+        .todo(execute(sing))
         .await;
 
-    let learn_rust_time = sch.next_run_with_name("learn_rust").await.unwrap();
-    let sing_time = sch.next_run_with_name("sing").await.unwrap();
+    let learn_rust_time = sch.next_run_with_name("learn_rust").unwrap();
+    let sing_time = sch.next_run_with_name("sing").unwrap();
     assert_ne!(learn_rust_time, sing_time);
     assert_eq!(learn_rust_time, sing_time + 23 * 3600);
 }
 
 #[tokio::test]
 async fn test_debug_scheduler() {
-    let mut sch = Scheduler::<(), RedisLockerOk>::new(1, 10);
-    sch.at()
-        .await
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    let sch = sch
+        .at()
         .day(0, 59, 59)
+        .todo(execute(learn_rust))
         .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(learn_rust)
-        .await;
-
-    sch.at()
-        .await
+        .at()
         .day(1, 59, 59)
-        .await
-        .with_opts::<Box<dyn Fn(std::io::Error) + Send + Sync>>(false, None, None)
-        .await
-        .todo(sing)
+        .todo(execute(sing))
         .await;
     println!("{:?}", sch);
 }
@@ -725,46 +680,261 @@ async fn test_debug_scheduler() {
 #[tokio::test]
 #[should_panic]
 async fn test_is_at() {
-    let mut sch = Scheduler::<(), RedisLockerOk>::new(1, 10);
-    sch.at().await.second().await;
-
-    sch.at().await.minute().await;
-    sch.at().await.hour().await;
+    let rl = RedisLockerOk;
+    let mut sch = Scheduler::<EmptyTask, RedisLockerOk>::new(1, 10);
+    sch.set_locker(rl);
+    sch.at().second().at().minute().at().hour();
 }
 
-async fn panic_job() {
+async fn panic_job() -> Result<(), Box<dyn Error>> {
     let mut guard = LOCKED_FLAG.try_write().unwrap();
     *guard = !*guard;
-}
-
-#[tokio::test]
-async fn test_start_with_unlock() {
-    let mut sch = Scheduler::<(), LockedLocker>::new(1, 10);
-    sch.every(2)
-        .await
-        .second()
-        .await
-        .with_opts(false, Some(Box::new(err_callback_mock)), Some(LockedLocker))
-        .await
-        .todo_with_unlock(panic_job)
-        .await;
-    start_scheldure_with_cancel(sch, 3).await;
-    let guard = LOCKED_FLAG.try_read().unwrap();
-    assert_eq!(*guard, true);
+    Ok(())
 }
 
 #[tokio::test]
 async fn test_start_without_unlock() {
-    let mut sch = Scheduler::<(), LockedLocker>::new(1, 10);
-    sch.every(2)
-        .await
-        .second()
-        .await
-        .with_opts(true, Some(Box::new(err_callback_mock)), Some(LockedLocker))
-        .await
-        .todo(panic_job)
-        .await;
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    let sch = sch.every(2).second().todo(execute(panic_job)).await;
     start_scheldure_with_cancel(sch, 2).await;
     let guard = UNLOCKED.try_read().unwrap();
     assert_eq!(*guard, false);
+}
+
+#[tokio::test]
+async fn test_job_with_arguments() {
+    let child = Person { age: 8 };
+    let mut arg = ArgStorage::new();
+    arg.insert(child);
+    let mut sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    sch.set_arg_storage(arg);
+    let sch = sch
+        .every(2)
+        .second()
+        .todo(execute(is_eight_years_old))
+        .await;
+    start_scheldure_with_cancel(sch, 2).await;
+    let guard = EIGHT.try_read().unwrap();
+    assert_eq!(*guard, 0);
+}
+
+#[tokio::test]
+async fn test_panic_job_with_arguments() {
+    let child = Person { age: 2 };
+    let mut arg = ArgStorage::new();
+    arg.insert(child);
+    let mut sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    sch.set_arg_storage(arg);
+    let sch = sch
+        .every(2)
+        .second()
+        .todo(execute(is_eight_years_old))
+        .await;
+    start_scheldure_with_cancel(sch, 2).await;
+    let guard = EIGHT.try_read().unwrap();
+    assert_eq!(*guard, 8);
+}
+
+async fn counter() -> Result<(), Box<dyn Error>> {
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    println!("counter");
+    let mut guard = EIGHT.write().await;
+    *guard += 1;
+    Ok(())
+}
+
+fn once(m: &Metric, last: &DateTime<Local>) -> duration {
+    let n = m.n_scheduled.load(Ordering::Relaxed);
+    if n < 1 {
+        duration::seconds(2)
+    } else if n == 1 {
+        duration::seconds(last.timestamp() * 2)
+    } else {
+        duration::seconds(0)
+    }
+}
+
+#[tokio::test]
+async fn test_by() {
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    let now = Local::now();
+    let sch = sch.by(once).todo(execute(counter)).await;
+    assert_eq!(sch.time_unit_with_name("counter"), None);
+    assert_eq!(sch.weekday_with_name("counter"), None);
+    let next = now + duration::seconds(2);
+    assert_eq!(sch.last_run_with_name("counter").unwrap(), now.timestamp());
+    assert_eq!(sch.next_run_with_name("counter").unwrap(), next.timestamp());
+    start_scheldure_with_cancel(sch, 6).await;
+    {
+        let guard = EIGHT.read().await;
+        assert_eq!(*guard, 1);
+    }
+    {
+        let mut guard = EIGHT.write().await;
+        *guard = 0;
+    }
+}
+
+#[tokio::test]
+async fn test_by_immediately_run() {
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    let sch = sch.by(once).immediately_run().todo(execute(counter)).await;
+    start_scheldure_with_cancel(sch, 6).await;
+    {
+        let guard = EIGHT.read().await;
+        assert_eq!(*guard, 2);
+    }
+    let js = get_metric_with_name("counter").unwrap();
+    let m: MetricTest = serde_json::from_str(&js).unwrap();
+    assert_eq!(2, m.n_scheduled);
+    assert_eq!(2, m.n_success);
+    assert_eq!(4, m.t_total_elapsed);
+    assert_eq!(2, m.t_maximum_elapsed);
+    assert_eq!(2, m.t_minimum_elapsed);
+    assert_eq!(2, m.t_average_elapsed);
+    assert_eq!(0, m.n_error);
+    assert_eq!(0, m.n_failure_of_unlock);
+    assert_eq!(0, m.n_failure_of_lock);
+    {
+        let mut guard = EIGHT.write().await;
+        *guard = 0;
+    }
+}
+
+#[tokio::test]
+async fn test_by_need_locker() {
+    let rl = RedisLockerOk;
+    let mut sch = Scheduler::<EmptyTask, RedisLockerOk>::new(1, 10);
+    sch.set_locker(rl);
+    let sch = sch.by(once).need_lock().todo(execute(counter)).await;
+    start_scheldure_with_cancel(sch, 6).await;
+    {
+        let guard = EIGHT.read().await;
+        assert_eq!(*guard, 1);
+    }
+    let js = get_metric_with_name("counter").unwrap();
+    let m: MetricTest = serde_json::from_str(&js).unwrap();
+    assert_eq!(2, m.n_scheduled);
+    assert_eq!(1, m.n_success);
+    assert_eq!(2, m.t_total_elapsed);
+    assert_eq!(2, m.t_maximum_elapsed);
+    assert_eq!(2, m.t_minimum_elapsed);
+    assert_eq!(2, m.t_average_elapsed);
+    assert_eq!(0, m.n_error);
+    assert_eq!(0, m.n_failure_of_unlock);
+    assert_eq!(0, m.n_failure_of_lock);
+    {
+        let mut guard = EIGHT.write().await;
+        *guard = 0;
+    }
+}
+
+#[tokio::test]
+async fn test_by_with_args() {
+    let child = Person { age: 2 };
+    let mut arg = ArgStorage::new();
+    arg.insert(child);
+    let mut sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    sch.set_arg_storage(arg);
+    let sch = sch.by(once).todo(execute(is_eight_years_old)).await;
+    start_scheldure_with_cancel(sch, 2).await;
+    let guard = EIGHT.try_read().unwrap();
+    assert_eq!(*guard, 8);
+}
+
+#[tokio::test]
+async fn test_n_threads() {
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    let sch = sch.by(once).n_threads(3).todo(execute(counter)).await;
+    start_scheldure_with_cancel(sch, 6).await;
+    {
+        let guard = EIGHT.read().await;
+        assert_eq!(*guard, 3);
+    }
+    {
+        let mut guard = EIGHT.write().await;
+        *guard = 0;
+    }
+}
+
+#[tokio::test]
+async fn test_error_job() {
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    let sch = sch.every(2).second().todo(execute(error_job)).await;
+    start_scheldure_with_cancel(sch, 6).await;
+    let js = get_metric_with_name("error_job").unwrap();
+    let m: MetricTest = serde_json::from_str(&js).unwrap();
+    assert_eq!(4, m.n_scheduled);
+    assert_eq!(0, m.n_success);
+    assert_eq!(0, m.t_total_elapsed);
+    assert_eq!(0, m.t_maximum_elapsed);
+    assert_eq!(0, m.t_minimum_elapsed);
+    assert_eq!(0, m.t_average_elapsed);
+    assert_eq!(3, m.n_error);
+    assert_eq!(0, m.n_failure_of_unlock);
+    assert_eq!(0, m.n_failure_of_lock);
+}
+
+#[tokio::test]
+async fn test_record_locker_false() {
+    let rle = RedisLockerFlase;
+    let mut sch = Scheduler::<EmptyTask, RedisLockerFlase>::new(1, 10);
+    sch.set_locker(rle);
+    let sch = sch
+        .every(2)
+        .second()
+        .need_lock()
+        .todo(execute(error_job))
+        .await;
+    start_scheldure_with_cancel(sch, 6).await;
+    let js = get_metric_with_name("error_job").unwrap();
+    let m: MetricTest = serde_json::from_str(&js).unwrap();
+    assert_eq!(4, m.n_scheduled);
+    assert_eq!(0, m.n_success);
+    assert_eq!(0, m.t_total_elapsed);
+    assert_eq!(0, m.t_maximum_elapsed);
+    assert_eq!(0, m.t_minimum_elapsed);
+    assert_eq!(0, m.t_average_elapsed);
+    assert_eq!(0, m.n_error);
+    assert_eq!(0, m.n_failure_of_unlock);
+    assert_eq!(3, m.n_failure_of_lock);
+}
+
+#[derive(Deserialize, Debug)]
+struct MetricTest {
+    n_scheduled: i8,
+    n_success: i8,
+    t_total_elapsed: i8,
+    t_maximum_elapsed: i8,
+    t_minimum_elapsed: i8,
+    t_average_elapsed: i8,
+    n_error: i8,
+    n_failure_of_unlock: i8,
+    n_failure_of_lock: i8,
+}
+
+#[tokio::test]
+async fn test_metric() {
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    let sch = sch.by(once).n_threads(3).todo(execute(counter)).await;
+    start_scheldure_with_cancel(sch, 6).await;
+    {
+        let guard = EIGHT.read().await;
+        assert_eq!(*guard, 3);
+    }
+    let js = get_metric_with_name("counter").unwrap();
+    let m: MetricTest = serde_json::from_str(&js).unwrap();
+    assert_eq!(2, m.n_scheduled);
+    assert_eq!(3, m.n_success);
+    assert_eq!(6, m.t_total_elapsed);
+    assert_eq!(2, m.t_maximum_elapsed);
+    assert_eq!(2, m.t_minimum_elapsed);
+    assert_eq!(2, m.t_average_elapsed);
+    assert_eq!(0, m.n_error);
+    assert_eq!(0, m.n_failure_of_unlock);
+    assert_eq!(0, m.n_failure_of_lock);
+    {
+        let mut guard = EIGHT.write().await;
+        *guard = 0;
+    }
 }
