@@ -1,6 +1,5 @@
 mod synchronous;
 
-use async_trait::async_trait;
 use chrono::Duration as duration;
 use chrono::{DateTime, Datelike, Local, Timelike};
 use rucron::handler::JobHandler;
@@ -125,10 +124,9 @@ struct Person {
     age: i32,
 }
 
-#[async_trait]
 impl ParseArgs for Person {
     type Err = std::io::Error;
-    async fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err> {
+    fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err> {
         return Ok(args.get::<Person>().unwrap().clone());
     }
 }

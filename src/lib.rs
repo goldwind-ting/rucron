@@ -119,7 +119,7 @@ pub mod scheduler;
 #[macro_use]
 extern crate lazy_static;
 pub use crate::error::RucronError;
-pub use crate::handler::{execute, ArgStorage, ParseArgs};
+pub use crate::handler::{execute, sync_execute, ArgStorage, ParseArgs};
 pub use crate::locker::Locker;
 pub use crate::metric::Metric;
 pub use crate::scheduler::{EmptyTask, Scheduler};
