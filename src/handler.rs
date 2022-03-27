@@ -39,6 +39,17 @@ where
     }
 }
 
+#[async_trait]
+impl<Func> Executor<String> for Func
+where Func: Fn() -> Result<(), Box<dyn Error>> + Send + Sync + 'static,
+{
+    async fn call(&self, _args: &ArgStorage) -> Result<(), RucronError> {
+        self()
+            .map_err(|e| RucronError::RunTimeError(e.to_string()))
+    }
+}
+
+
 /// `Scheduler` mangages all jobs by this trait. When a job is runnable,
 ///
 /// the `Schedluler` find recursively the job by name and parse arguments the job need from `args`.
@@ -89,7 +100,8 @@ pub trait ParseArgs: Sized + Clone {
 
     async fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err>;
 }
-macro_rules! impl_Executor {
+
+macro_rules! impl_executor {
     ( $($ty:ident),* $(,)? ) => {
         #[async_trait]
         #[allow(non_snake_case)]
@@ -114,22 +126,24 @@ macro_rules! impl_Executor {
     };
 }
 
-impl_Executor!(T1);
-impl_Executor!(T1, T2);
-impl_Executor!(T1, T2, T3);
-impl_Executor!(T1, T2, T3, T4);
-impl_Executor!(T1, T2, T3, T4, T5);
-impl_Executor!(T1, T2, T3, T4, T5, T6);
-impl_Executor!(T1, T2, T3, T4, T5, T6, T7);
-impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8);
-impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
-impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
-impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
-impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
-impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13);
-impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14);
-impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15);
-impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16);
+
+impl_executor!(T1);
+impl_executor!(T1, T2);
+impl_executor!(T1, T2, T3);
+impl_executor!(T1, T2, T3, T4);
+impl_executor!(T1, T2, T3, T4, T5);
+impl_executor!(T1, T2, T3, T4, T5, T6);
+impl_executor!(T1, T2, T3, T4, T5, T6, T7);
+impl_executor!(T1, T2, T3, T4, T5, T6, T7, T8);
+impl_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
+impl_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
+impl_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
+impl_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
+impl_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13);
+impl_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14);
+impl_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15);
+impl_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16);
+
 
 /// `Task` stores runtime parameters of a job which name is [`name`].
 #[derive(Debug, Clone)]

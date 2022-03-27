@@ -1,3 +1,5 @@
+mod synchronous;
+
 use async_trait::async_trait;
 use chrono::Duration as duration;
 use chrono::{DateTime, Datelike, Local, Timelike};
