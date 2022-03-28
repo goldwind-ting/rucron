@@ -26,9 +26,8 @@ pub trait Executor<T>: Send + Sized + 'static {
     async fn call(&self, args: &ArgStorage) -> Result<(), RucronError>;
 }
 
-#[async_trait]
-pub trait SyncExecutor<T>{
-    async fn call(&self, args: &ArgStorage) -> Result<(), RucronError>;
+pub trait SyncExecutor<T> {
+    fn call(&self, args: &ArgStorage) -> Result<(), RucronError>;
 }
 
 #[async_trait]
@@ -44,16 +43,14 @@ where
     }
 }
 
-#[async_trait]
 impl<Func> SyncExecutor<()> for Func
-where Func: Fn() -> Result<(), Box<dyn Error>> + Send + Sync + 'static,
+where
+    Func: Fn() -> Result<(), Box<dyn Error>> + Send + Sync + 'static,
 {
-    async fn call(&self, _args: &ArgStorage) -> Result<(), RucronError> {
-        self()
-            .map_err(|e| RucronError::RunTimeError(e.to_string()))
+    fn call(&self, _args: &ArgStorage) -> Result<(), RucronError> {
+        self().map_err(|e| RucronError::RunTimeError(e.to_string()))
     }
 }
-
 
 /// `Scheduler` mangages all jobs by this trait. When a job is runnable,
 ///
@@ -99,11 +96,10 @@ pub trait JobHandler: Send + Sized + 'static {
 ///     assert!(sch.is_scheduled("say_age"));
 /// }
 /// ```
-#[async_trait]
 pub trait ParseArgs: Sized + Clone {
     type Err: Error;
 
-    async fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err>;
+    fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err>;
 }
 
 macro_rules! impl_executor {
@@ -118,7 +114,7 @@ macro_rules! impl_executor {
         {
             async fn call(&self, args:&ArgStorage) -> Result<(), RucronError> {
                 $(
-                    let $ty = match $ty::parse_args(args).await {
+                    let $ty = match $ty::parse_args(args) {
                         Ok(value) => value,
                         Err(e) => {
                             return Err(RucronError::ParseArgsError(e.to_string()))
@@ -131,20 +127,17 @@ macro_rules! impl_executor {
     };
 }
 
-
-
 macro_rules! impl_sync_executor {
     ( $($ty:ident),* $(,)? ) => {
-        #[async_trait]
         #[allow(non_snake_case)]
         impl<F, $($ty,)*> SyncExecutor<($($ty,)*)> for F
         where
             F: Fn($($ty,)*) -> Result<(), Box<dyn Error>> + Clone + Send + Sync + 'static,
             $($ty: ParseArgs + Send,)*
         {
-            async fn call(&self, args:&ArgStorage) -> Result<(), RucronError> {
+            fn call(&self, args:&ArgStorage) -> Result<(), RucronError> {
                 $(
-                    let $ty = match $ty::parse_args(args).await {
+                    let $ty = match $ty::parse_args(args) {
                         Ok(value) => value,
                         Err(e) => {
                             return Err(RucronError::ParseArgsError(e.to_string()))
@@ -156,7 +149,6 @@ macro_rules! impl_sync_executor {
         }
     };
 }
-
 
 impl_executor!(T1);
 impl_executor!(T1, T2);
@@ -175,7 +167,6 @@ impl_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14);
 impl_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15);
 impl_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16);
 
-
 impl_sync_executor!(T1);
 impl_sync_executor!(T1, T2);
 impl_sync_executor!(T1, T2, T3);
@@ -192,7 +183,6 @@ impl_sync_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13);
 impl_sync_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14);
 impl_sync_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15);
 impl_sync_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16);
-
 
 /// `Task` stores runtime parameters of a job which name is [`name`].
 #[derive(Debug, Clone)]
@@ -283,14 +273,12 @@ pub struct ExecutorWrapper<E, T> {
     _marker: PhantomData<T>,
 }
 
-
 #[derive(Clone)]
 pub struct SyncExecutorWrapper<E, T> {
     executor: E,
     executor_name: String,
     _marker: PhantomData<T>,
 }
-
 
 /// Create a `ExecutorWrapper` and add this job to the `Scheduler`.
 ///
@@ -317,10 +305,7 @@ pub struct SyncExecutorWrapper<E, T> {
 ///     sch.every(2).second().todo(execute(foo)).await;
 /// }
 /// ```
-pub fn execute<E, T>(executor: E) -> ExecutorWrapper<E, T>
-where
-    E: Executor<T>,
-{
+pub fn execute<E, T>(executor: E) -> ExecutorWrapper<E, T> {
     let tname = type_name::<E>();
     let tokens: Vec<&str> = tname.split("::").collect();
     let name = match (*tokens).get(tokens.len() - 1) {
@@ -334,24 +319,19 @@ where
     }
 }
 
-
-pub fn sync_execute<E, T>(executor: E) -> SyncExecutorWrapper<E, T>
-where
-    E: SyncExecutor<T>,
-{
-    let tname = type_name::<E>();
-    let tokens: Vec<&str> = tname.split("::").collect();
-    let name = match (*tokens).get(tokens.len() - 1) {
-        None => panic!("Invalid name: {:?}", tokens),
-        Some(s) => (*s).into(),
-    };
-    SyncExecutorWrapper {
-        executor,
-        executor_name: name,
-        _marker: PhantomData,
+impl<E, T> From<ExecutorWrapper<E, T>> for SyncExecutorWrapper<E, T> {
+    fn from(executor: ExecutorWrapper<E, T>) -> Self {
+        SyncExecutorWrapper {
+            executor: executor.executor,
+            executor_name: executor.executor_name,
+            _marker: executor._marker,
+        }
     }
 }
 
+pub fn sync_execute<E, T>(executor: E) -> SyncExecutorWrapper<E, T> {
+    SyncExecutorWrapper::from(execute(executor))
+}
 
 #[async_trait]
 impl<E, T> JobHandler for ExecutorWrapper<E, T>
@@ -388,9 +368,6 @@ where
     }
 }
 
-
-
-
 #[async_trait]
 impl<E, T> JobHandler for SyncExecutorWrapper<E, T>
 where
@@ -399,7 +376,7 @@ where
 {
     async fn call(&self, args: Arc<ArgStorage>, _name: String) {
         let start = Local::now();
-        SyncExecutor::call(&self.executor, &*args).await.map_or_else(
+        SyncExecutor::call(&self.executor, &*args).map_or_else(
             |e| {
                 log::error!("{}", e);
                 METRIC_STORAGE.get(&self.name()).map_or_else(
