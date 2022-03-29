@@ -1,5 +1,5 @@
 use rucron::{
-    sync_execute, EmptyTask, Scheduler,ArgStorage,ParseArgs,
+    sync_execute, EmptyTask, Scheduler,ArgStorage,ParseArgs,RucronError, execute
 };
 use chrono::prelude::*;
 use std::{error::Error, thread::sleep, time::Duration};
@@ -67,6 +67,34 @@ async fn test_synronous_func() {
 }
 
 
+fn learn_rust() -> Result<(), Box<dyn Error>> {
+    sleep(Duration::from_secs(1));
+    println!("I am learning rust!");
+    Ok(())
+}
+
+fn sing() -> Result<(), Box<dyn Error>> {
+    println!("I am singing!");
+    Ok(())
+}
+
+fn cooking() -> Result<(), Box<dyn Error>> {
+    sleep(Duration::from_secs(1));
+    println!("I am cooking!");
+    Ok(())
+}
+
+fn error_job() -> Result<(), Box<dyn Error>> {
+    Err(Box::new(RucronError::NotFound))
+}
+
+async fn async_foo() -> Result<(), Box<dyn Error>> {
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    println!("foo");
+    Ok(())
+}
+
+
 #[derive(Clone)]
 struct Person {
     age: i32,
@@ -106,4 +134,57 @@ async fn test_sync_set_age(){
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
     let guard = EIGHT.read().unwrap();
     assert_eq!(*guard, 8);
+}
+
+
+
+#[tokio::test]
+async fn test_multiple_job(){
+    let child = Person { age: 8 };
+    let mut arg = ArgStorage::new();
+    arg.insert(child);
+    let mut sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    sch.set_arg_storage(arg);
+    let sch = sch
+        .every(2)
+        .second()
+        .todo(sync_execute(sync_set_age)).await
+        .every(5)
+        .second()
+        .todo(sync_execute(learn_rust)).await
+        .every(4)
+        .second()
+        .todo(sync_execute(cooking)).await
+        .every(3)
+        .second()
+        .todo(sync_execute(error_job)).await
+        .every(1)
+        .second()
+        .todo(sync_execute(sing)).await;
+    
+    tokio::spawn(async move{
+        sch.start().await
+    });
+    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+    let guard = EIGHT.read().unwrap();
+    assert_eq!(*guard, 8);
+}
+
+
+#[tokio::test]
+async fn test_mix_async(){
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    let sch = sch
+        .every(2)
+        .second()
+        .todo(execute(async_foo)).await
+        .every(1)
+        .second()
+        .immediately_run()
+        .todo(sync_execute(sing)).await;
+    
+    tokio::spawn(async move{
+        sch.start().await
+    });
+    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
 }
