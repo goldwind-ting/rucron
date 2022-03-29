@@ -26,6 +26,7 @@ pub trait Executor<T>: Send + Sized + 'static {
     async fn call(&self, args: &ArgStorage) -> Result<(), RucronError>;
 }
 
+/// The trait is similar to `Executor`, the task must be synchronous.
 pub trait SyncExecutor<T> {
     fn call(&self, args: &ArgStorage) -> Result<(), RucronError>;
 }
@@ -273,6 +274,7 @@ pub struct ExecutorWrapper<E, T> {
     _marker: PhantomData<T>,
 }
 
+/// [`SyncExecutorWrapper`] wraps the `SyncExecutor` and stores it's name.
 #[derive(Clone)]
 pub struct SyncExecutorWrapper<E, T> {
     executor: E,
@@ -282,7 +284,7 @@ pub struct SyncExecutorWrapper<E, T> {
 
 /// Create a `ExecutorWrapper` and add this job to the `Scheduler`.
 ///
-/// - `executor is the job to be run.
+/// - `executor` is the job to be run.
 ///
 /// # Panics
 ///
@@ -329,6 +331,30 @@ impl<E, T> From<ExecutorWrapper<E, T>> for SyncExecutorWrapper<E, T> {
     }
 }
 
+/// Create a `SyncExecutorWrapper` and add this job to the `Scheduler`.
+/// It is similar to `execute`, but the `executor` needs to be implemented `SyncExecutor`.
+///
+/// # Panics
+///
+/// Panics if cann't parse name of [`E`] by `type_name`.
+///
+/// # Examples
+///
+/// ```
+/// use rucron::{sync_execute, Scheduler, EmptyTask};
+/// use std::error::Error;
+/// use std::sync::Arc;
+///
+/// fn foo() -> Result<(), Box<dyn Error>> {
+///     println!("{}", "foo");
+///     Ok(())
+/// }
+/// #[tokio::main]
+/// async fn main(){
+///     let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+///     sch.every(2).second().todo(sync_execute(foo)).await;
+/// }
+/// ```
 pub fn sync_execute<E, T>(executor: E) -> SyncExecutorWrapper<E, T> {
     SyncExecutorWrapper::from(execute(executor))
 }
