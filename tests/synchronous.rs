@@ -1,10 +1,13 @@
 use rucron::{
-    sync_execute, EmptyTask, Scheduler,ArgStorage,ParseArgs,RucronError, execute
+    sync_execute, EmptyTask, Scheduler,ArgStorage,ParseArgs,RucronError, execute, get_metric_with_name
 };
+use tokio::runtime::Runtime;
 use chrono::prelude::*;
 use std::{error::Error, thread::sleep, time::Duration};
 use std::sync::{mpsc::{SyncSender, sync_channel}, RwLock};
 use lazy_static::lazy_static;
+use serde::Deserialize;
+
 
 lazy_static! {
     static ref BROADCAST_CONNECT: RwLock<Option<SyncSender <bool>>> = RwLock::new(None);
@@ -12,6 +15,19 @@ lazy_static! {
     static ref INTERVAL: i32 = 2;
     static ref TIME_COUNAINER_SECOND_INTERVAL: RwLock<Vec<i64>> = RwLock::new(Vec::new());
     static ref EIGHT: RwLock<i8> = RwLock::new(0);
+}
+
+#[derive(Deserialize, Debug)]
+struct MetricTest {
+    n_scheduled: i8,
+    n_success: i8,
+    t_total_elapsed: i8,
+    t_maximum_elapsed: i8,
+    t_minimum_elapsed: i8,
+    t_average_elapsed: i8,
+    n_error: i8,
+    n_failure_of_unlock: i8,
+    n_failure_of_lock: i8,
 }
 
 
@@ -79,7 +95,7 @@ fn sing() -> Result<(), Box<dyn Error>> {
 }
 
 fn cooking() -> Result<(), Box<dyn Error>> {
-    sleep(Duration::from_secs(1));
+    sleep(Duration::from_secs(10));
     println!("I am cooking!");
     Ok(())
 }
@@ -112,7 +128,7 @@ fn sync_set_age(p: Person) ->Result<(), Box<dyn Error>>{
     if p.age == 8 {
         let mut guard = EIGHT.write().unwrap();
         *guard = 8;
-    }
+    };
     Ok(())
 }
 
@@ -165,9 +181,44 @@ async fn test_multiple_job(){
     tokio::spawn(async move{
         sch.start().await
     });
-    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+    tokio::time::sleep(tokio::time::Duration::from_secs(11)).await;
     let guard = EIGHT.read().unwrap();
     assert_eq!(*guard, 8);
+    let js = get_metric_with_name("error_job").unwrap();
+    let m: MetricTest = serde_json::from_str(&js).unwrap();
+    assert_eq!(4, m.n_scheduled);
+    assert_eq!(0, m.n_success);
+    assert_eq!(0, m.t_total_elapsed);
+    assert_eq!(0, m.t_maximum_elapsed);
+    assert_eq!(0, m.t_minimum_elapsed);
+    assert_eq!(0, m.t_average_elapsed);
+    assert_eq!(3, m.n_error);
+    assert_eq!(0, m.n_failure_of_unlock);
+    assert_eq!(0, m.n_failure_of_lock);
+    let lr = get_metric_with_name("learn_rust").unwrap();
+    let m: MetricTest = serde_json::from_str(&lr).unwrap();
+    println!("{:?}", &m);
+    assert_eq!(3, m.n_scheduled);
+    assert_eq!(2, m.n_success);
+    assert_eq!(2, m.t_total_elapsed);
+    assert_eq!(1, m.t_maximum_elapsed);
+    assert_eq!(1, m.t_minimum_elapsed);
+    assert_eq!(1, m.t_average_elapsed);
+    assert_eq!(0, m.n_error);
+    assert_eq!(0, m.n_failure_of_unlock);
+    assert_eq!(0, m.n_failure_of_lock);
+    // let cook = get_metric_with_name("cooking").unwrap();
+    // let m: MetricTest = serde_json::from_str(&cook).unwrap();
+    // println!("{:?}", &m);
+    // assert_eq!(3, m.n_scheduled);
+    // assert_eq!(2, m.n_success);
+    // assert_eq!(4, m.t_total_elapsed);
+    // assert_eq!(2, m.t_maximum_elapsed);
+    // assert_eq!(2, m.t_minimum_elapsed);
+    // assert_eq!(2, m.t_average_elapsed);
+    // assert_eq!(0, m.n_error);
+    // assert_eq!(0, m.n_failure_of_unlock);
+    // assert_eq!(0, m.n_failure_of_lock);
 }
 
 
@@ -180,11 +231,63 @@ async fn test_mix_async(){
         .todo(execute(async_foo)).await
         .every(1)
         .second()
-        .immediately_run()
-        .todo(sync_execute(sing)).await;
-    
+        .todo(sync_execute(cooking)).await;
     tokio::spawn(async move{
         sch.start().await
     });
-    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+    sleep(Duration::from_secs(15));
 }
+
+
+#[test]
+fn test_cooking(){
+    let runtime = Runtime::new().unwrap();
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    let sch = runtime.block_on(async{
+        sch
+        .every(1)
+        .second()
+        .immediately_run()
+        .todo(sync_execute(cooking)).await
+        .every(1).second().todo(execute(async_foo)).await
+    });
+    
+    // runtime.spawn(async move {
+    //     let _ = sch.start().await;
+    // });
+    // let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    // let sch = runtime.block_on(async{
+    //     sch.every(1).second().todo(execute(async_foo)).await
+    // });
+    runtime.block_on(async move {
+        let _ = sch.start().await;
+    });
+}
+
+
+// use tokio::time::sleep as Tsleep;
+// use tokio::time::Duration as TDuration;
+
+// async fn async_foo(){
+//     loop{
+//         Tsleep(TDuration::from_secs(1)).await;
+//         println!("foo");
+//     }
+// }
+// fn sync_cook(){
+//     std::thread::sleep(std::time::Duration::from_secs(6));
+//     println!("cooking!");
+// }
+
+// #[tokio::main]
+// async fn main(){
+//     let (tx, rx) = tokio::sync::oneshot::channel();
+//     rayon::spawn(move ||{
+//         let _ = sync_cook();
+//         let _ = tx.send(1);
+//     });
+//     tokio::spawn(async move{
+//         let _ = async_foo().await;
+//     });
+//     rx.await.expect("Panic in rayon::spawn");
+// }
