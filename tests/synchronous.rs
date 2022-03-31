@@ -1,7 +1,6 @@
 use rucron::{
     sync_execute, EmptyTask, Scheduler,ArgStorage,ParseArgs,RucronError, execute, get_metric_with_name
 };
-use tokio::runtime::Runtime;
 use chrono::prelude::*;
 use std::{error::Error, thread::sleep, time::Duration};
 use std::sync::{mpsc::{SyncSender, sync_channel}, RwLock};
@@ -95,7 +94,7 @@ fn sing() -> Result<(), Box<dyn Error>> {
 }
 
 fn cooking() -> Result<(), Box<dyn Error>> {
-    sleep(Duration::from_secs(10));
+    sleep(Duration::from_secs(3));
     println!("I am cooking!");
     Ok(())
 }
@@ -105,7 +104,7 @@ fn error_job() -> Result<(), Box<dyn Error>> {
 }
 
 async fn async_foo() -> Result<(), Box<dyn Error>> {
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     println!("foo");
     Ok(())
 }
@@ -239,55 +238,20 @@ async fn test_mix_async(){
 }
 
 
-#[test]
-fn test_cooking(){
-    let runtime = Runtime::new().unwrap();
+#[tokio::test]
+async fn test_cooking(){
     let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
-    let sch = runtime.block_on(async{
-        sch
-        .every(1)
-        .second()
-        .immediately_run()
-        .todo(sync_execute(cooking)).await
-        .every(1).second().todo(execute(async_foo)).await
-    });
+    let sch = sch
+    .every(1)
+    .second()
+    .todo(sync_execute(cooking)).await;
+    // .every(1).second().todo(execute(async_foo)).await;
     
-    // runtime.spawn(async move {
-    //     let _ = sch.start().await;
-    // });
-    // let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
-    // let sch = runtime.block_on(async{
-    //     sch.every(1).second().todo(execute(async_foo)).await
-    // });
-    runtime.block_on(async move {
-        let _ = sch.start().await;
+    tokio::spawn(async move{
+        sch.start().await
     });
+    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+    let lr = get_metric_with_name("cooking").unwrap();
+    let m: MetricTest = serde_json::from_str(&lr).unwrap();
+    println!("{:?}", m);
 }
-
-
-// use tokio::time::sleep as Tsleep;
-// use tokio::time::Duration as TDuration;
-
-// async fn async_foo(){
-//     loop{
-//         Tsleep(TDuration::from_secs(1)).await;
-//         println!("foo");
-//     }
-// }
-// fn sync_cook(){
-//     std::thread::sleep(std::time::Duration::from_secs(6));
-//     println!("cooking!");
-// }
-
-// #[tokio::main]
-// async fn main(){
-//     let (tx, rx) = tokio::sync::oneshot::channel();
-//     rayon::spawn(move ||{
-//         let _ = sync_cook();
-//         let _ = tx.send(1);
-//     });
-//     tokio::spawn(async move{
-//         let _ = async_foo().await;
-//     });
-//     rx.await.expect("Panic in rayon::spawn");
-// }

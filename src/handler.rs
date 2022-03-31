@@ -23,12 +23,12 @@ use std::{
 ///
 #[async_trait]
 pub trait Executor<T>: Send + Sized + 'static {
-    async fn call(&self, args: &ArgStorage) -> Result<(), RucronError>;
+    async fn call(self, args: &ArgStorage) -> Result<(), RucronError>;
 }
 
 /// The trait is similar to `Executor`, the task must be synchronous.
 pub trait SyncExecutor<T> {
-    fn call(&self, args: &ArgStorage) -> Result<(), RucronError>;
+    fn call(self, args: &ArgStorage, name: String) -> Result<(), RucronError>;
 }
 
 #[async_trait]
@@ -37,10 +37,12 @@ where
     F: Fn() -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<(), Box<dyn Error>>> + Send + 'static,
 {
-    async fn call(&self, _args: &ArgStorage) -> Result<(), RucronError> {
-        self()
+    async fn call(self, _args: &ArgStorage) -> Result<(), RucronError> {
+        tokio::spawn(async move{
+            self()
             .await
             .map_err(|e| RucronError::RunTimeError(e.to_string()))
+        }).await.unwrap()
     }
 }
 
@@ -48,8 +50,31 @@ impl<Func> SyncExecutor<()> for Func
 where
     Func: Fn() -> Result<(), Box<dyn Error>> + Send + Sync + 'static,
 {
-    fn call(&self, _args: &ArgStorage) -> Result<(), RucronError> {
-        self().map_err(|e| RucronError::RunTimeError(e.to_string()))
+    fn call(self, _args: &ArgStorage, name: String) -> Result<(), RucronError> {
+        let start = Local::now();
+        rayon::spawn(move ||{
+            self().map_err(|e| RucronError::RunTimeError(e.to_string()))
+            .map_or_else(
+                |e| {
+                    log::error!("{}", e);
+                    METRIC_STORAGE.get(&name).map_or_else(
+                        || unreachable!("unreachable"),
+                        |m| m.add_failure(NumberType::Error),
+                    );
+                },
+                |_| {
+                    METRIC_STORAGE.get(&name).map_or_else(
+                        || unreachable!("unreachable"),
+                        |m| {
+                            m.swap_time_and_add_runs(
+                                Local::now().signed_duration_since(start).num_seconds() as usize,
+                            )
+                        },
+                    );
+                },
+            );
+        });
+        Ok(())
     }
 }
 
@@ -58,7 +83,7 @@ where
 /// the `Schedluler` find recursively the job by name and parse arguments the job need from `args`.
 #[async_trait]
 pub trait JobHandler: Send + Sized + 'static {
-    async fn call(&self, args: Arc<ArgStorage>, name: String);
+    async fn call(self, args: Arc<ArgStorage>, name: String);
     fn name(&self) -> String;
 }
 
@@ -113,7 +138,7 @@ macro_rules! impl_executor {
             Fut: Future<Output = Result<(), Box<dyn Error>>> + Send,
             $($ty: ParseArgs + Send,)*
         {
-            async fn call(&self, args:&ArgStorage) -> Result<(), RucronError> {
+            async fn call(self, args:&ArgStorage) -> Result<(), RucronError> {
                 $(
                     let $ty = match $ty::parse_args(args) {
                         Ok(value) => value,
@@ -134,9 +159,9 @@ macro_rules! impl_sync_executor {
         impl<F, $($ty,)*> SyncExecutor<($($ty,)*)> for F
         where
             F: Fn($($ty,)*) -> Result<(), Box<dyn Error>> + Clone + Send + Sync + 'static,
-            $($ty: ParseArgs + Send,)*
+            $($ty: ParseArgs + Send + 'static,)*
         {
-            fn call(&self, args:&ArgStorage) -> Result<(), RucronError> {
+            fn call(self, args:&ArgStorage, name: String) -> Result<(), RucronError> {
                 $(
                     let $ty = match $ty::parse_args(args) {
                         Ok(value) => value,
@@ -145,7 +170,30 @@ macro_rules! impl_sync_executor {
                         },
                     };
                 )*
-                self($($ty,)*).map_err(|e|RucronError::RunTimeError(e.to_string()))
+                let start = Local::now();
+                rayon::spawn(move ||{
+                    self($($ty,)*).map_err(|e|RucronError::RunTimeError(e.to_string()))
+                    .map_or_else(
+                        |e| {
+                            log::error!("{}", e);
+                            METRIC_STORAGE.get(&name).map_or_else(
+                                || unreachable!("unreachable"),
+                                |m| m.add_failure(NumberType::Error),
+                            );
+                        },
+                        |_| {
+                            METRIC_STORAGE.get(&name).map_or_else(
+                                || unreachable!("unreachable"),
+                                |m| {
+                                    m.swap_time_and_add_runs(
+                                        Local::now().signed_duration_since(start).num_seconds() as usize,
+                                    )
+                                },
+                            );
+                        },
+                    );
+                });
+                Ok(())
             }
         }
     };
@@ -203,9 +251,8 @@ where
     TH: JobHandler + Send + Sync + 'static,
     L: Locker + 'static + Send + Sync + Clone,
 {
-    async fn call(&self, args: Arc<ArgStorage>, name: String) {
+    async fn call(self, args: Arc<ArgStorage>, name: String) {
         if self.name == name {
-            let task = self.task.clone();
             if self.need_lock && self.locker.is_some() {
                 let locker = self.locker.clone();
                 match locker {
@@ -215,11 +262,9 @@ where
                                 "[DEBUG] Spawns a new asynchronous task to run: {}",
                                 &name[..]
                             );
-                            tokio::spawn(async move {
-                                JobHandler::call(&task, args.clone(), name.clone()).await;
-                                log::debug!("[DEBUG] Had finished running: {}", &name[..]);
-                                unlock_and_record(locker, &name[..], args);
-                            });
+                            JobHandler::call(self.task, args.clone(), name.clone()).await;
+                            log::debug!("[DEBUG] Had finished running: {}", &name[..]);
+                            unlock_and_record(locker, &name[..], args);
                         }
                         Ok(b) if !b => {
                             METRIC_STORAGE.get(&self.name()).map_or_else(
@@ -247,17 +292,15 @@ where
                 );
                 for _ in (0..self.n_threads).into_iter() {
                     let name_copy = name.clone();
-                    let task_copy = task.clone();
+                    let task_copy = self.task.clone();
                     let args_copy = args.clone();
-                    tokio::spawn(async move {
-                        JobHandler::call(&task_copy, args_copy, name_copy.clone()).await;
-                        log::debug!("[DEBUG] Had finished running: {}", name_copy);
-                    });
+                    JobHandler::call(task_copy, args_copy, name_copy.clone()).await;
+                    log::debug!("[DEBUG] Had finished running: {}", name_copy);
                 }
             };
             return;
         } else {
-            JobHandler::call(&self.fallback, args, name).await;
+            JobHandler::call(self.fallback, args, name).await;
         }
     }
     #[inline(always)]
@@ -362,12 +405,13 @@ pub fn sync_execute<E, T>(executor: E) -> SyncExecutorWrapper<E, T> {
 #[async_trait]
 impl<E, T> JobHandler for ExecutorWrapper<E, T>
 where
-    E: Executor<T> + Send + 'static + Sync,
+    E: Executor<T> + Send + 'static + Sync + Clone,
     T: Send + 'static + Sync,
 {
-    async fn call(&self, args: Arc<ArgStorage>, _name: String) {
+    async fn call(self, args: Arc<ArgStorage>, _name: String) {
         let start = Local::now();
-        Executor::call(&self.executor, &*args).await.map_or_else(
+        let exe = self.executor.clone();
+        Executor::call(exe, &*args).await.map_or_else(
             |e| {
                 log::error!("{}", e);
                 METRIC_STORAGE.get(&self.name()).map_or_else(
@@ -397,30 +441,12 @@ where
 #[async_trait]
 impl<E, T> JobHandler for SyncExecutorWrapper<E, T>
 where
-    E: SyncExecutor<T> + Send + 'static + Sync,
+    E: SyncExecutor<T> + Send + 'static + Sync + Clone,
     T: Send + 'static + Sync,
 {
-    async fn call(&self, args: Arc<ArgStorage>, _name: String) {
-        let start = Local::now();
-        SyncExecutor::call(&self.executor, &*args).map_or_else(
-            |e| {
-                log::error!("{}", e);
-                METRIC_STORAGE.get(&self.name()).map_or_else(
-                    || unreachable!("unreachable"),
-                    |m| m.add_failure(NumberType::Error),
-                );
-            },
-            |_| {
-                METRIC_STORAGE.get(&self.name()).map_or_else(
-                    || unreachable!("unreachable"),
-                    |m| {
-                        m.swap_time_and_add_runs(
-                            Local::now().signed_duration_since(start).num_seconds() as usize,
-                        )
-                    },
-                );
-            },
-        );
+    async fn call(self, args: Arc<ArgStorage>, name: String) {
+        let exe = self.executor.clone();
+        SyncExecutor::call(exe, &*args, name).unwrap();
     }
 
     #[inline(always)]
