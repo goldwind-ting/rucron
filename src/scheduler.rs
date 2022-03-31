@@ -38,8 +38,8 @@ where
     T: JobHandler + 'static + Send + Sync,
     L: Locker + 'static + Send + Sync,
 {
-    async fn call(&self, args: Arc<ArgStorage>, name: String) {
-        JobHandler::call(&self.task, args, name).await;
+    async fn call(self, args: Arc<ArgStorage>, name: String) {
+        JobHandler::call(self.task, args, name).await;
     }
 
     fn name(&self) -> String {
@@ -64,7 +64,7 @@ impl Clone for EmptyTask {
 
 #[async_trait]
 impl JobHandler for EmptyTask {
-    async fn call(&self, _args: Arc<ArgStorage>, _name: String) {}
+    async fn call(self, _args: Arc<ArgStorage>, _name: String) {}
     fn name(&self) -> String {
         return "EmptyTask".into();
     }
@@ -762,7 +762,7 @@ where
                 let cur_task = task.clone();
                 let args = self.arg_storage.clone().unwrap();
                 tokio::spawn(async move {
-                    JobHandler::call(&cur_task, args, name).await;
+                    JobHandler::call(cur_task, args, name).await;
                 });
             }
         }
@@ -1145,8 +1145,9 @@ where
                     tokio::spawn(async move{
                         let guard = jobs_loop.read().await;
                         for i in (0..size as usize).into_iter(){
+                            let task_copy = task_loop.clone();
                             let sl = storage_loop.clone().unwrap();
-                            JobHandler::call(&task_loop, sl, guard[i].get_job_name()).await;
+                            JobHandler::call(task_copy, sl, guard[i].get_job_name()).await;
                         };
                     });
                 },

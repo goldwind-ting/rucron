@@ -23,7 +23,12 @@ use std::{
 ///
 #[async_trait]
 pub trait Executor<T>: Send + Sized + 'static {
-    async fn call(&self, args: &ArgStorage) -> Result<(), RucronError>;
+    async fn call(self, args: &ArgStorage, name: String) -> Result<(), RucronError>;
+}
+
+/// The trait is similar to `Executor`, the task must be synchronous.
+pub trait SyncExecutor<T> {
+    fn call(self, args: &ArgStorage, name: String) -> Result<(), RucronError>;
 }
 
 #[async_trait]
@@ -32,10 +37,68 @@ where
     F: Fn() -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<(), Box<dyn Error>>> + Send + 'static,
 {
-    async fn call(&self, _args: &ArgStorage) -> Result<(), RucronError> {
-        self()
-            .await
-            .map_err(|e| RucronError::RunTimeError(e.to_string()))
+    async fn call(self, _args: &ArgStorage, name: String) -> Result<(), RucronError> {
+        let start = Local::now();
+        tokio::spawn(async move {
+            self()
+                .await
+                .map_err(|e| RucronError::RunTimeError(e.to_string()))
+                .map_or_else(
+                    |e| {
+                        log::error!("{}", e);
+                        METRIC_STORAGE.get(&name).map_or_else(
+                            || unreachable!("unreachable"),
+                            |m| m.add_failure(NumberType::Error),
+                        );
+                    },
+                    |_| {
+                        METRIC_STORAGE.get(&name).map_or_else(
+                            || unreachable!("unreachable"),
+                            |m| {
+                                m.swap_time_and_add_runs(
+                                    Local::now().signed_duration_since(start).num_seconds()
+                                        as usize,
+                                )
+                            },
+                        );
+                    },
+                );
+        });
+        Ok(())
+    }
+}
+
+impl<Func> SyncExecutor<()> for Func
+where
+    Func: Fn() -> Result<(), Box<dyn Error>> + Send + Sync + 'static,
+{
+    fn call(self, _args: &ArgStorage, name: String) -> Result<(), RucronError> {
+        let start = Local::now();
+        rayon::spawn(move || {
+            self()
+                .map_err(|e| RucronError::RunTimeError(e.to_string()))
+                .map_or_else(
+                    |e| {
+                        log::error!("{}", e);
+                        METRIC_STORAGE.get(&name).map_or_else(
+                            || unreachable!("unreachable"),
+                            |m| m.add_failure(NumberType::Error),
+                        );
+                    },
+                    |_| {
+                        METRIC_STORAGE.get(&name).map_or_else(
+                            || unreachable!("unreachable"),
+                            |m| {
+                                m.swap_time_and_add_runs(
+                                    Local::now().signed_duration_since(start).num_seconds()
+                                        as usize,
+                                )
+                            },
+                        );
+                    },
+                );
+        });
+        Ok(())
     }
 }
 
@@ -44,7 +107,7 @@ where
 /// the `Schedluler` find recursively the job by name and parse arguments the job need from `args`.
 #[async_trait]
 pub trait JobHandler: Send + Sized + 'static {
-    async fn call(&self, args: Arc<ArgStorage>, name: String);
+    async fn call(self, args: Arc<ArgStorage>, name: String);
     fn name(&self) -> String;
 }
 
@@ -67,7 +130,7 @@ pub trait JobHandler: Send + Sized + 'static {
 /// #[async_trait]
 /// impl ParseArgs for Person {
 ///     type Err = std::io::Error;
-///     async fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err> {
+///     fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err> {
 ///         return Ok(args.get::<Person>().unwrap().clone());
 ///     }
 /// }
@@ -78,18 +141,21 @@ pub trait JobHandler: Send + Sized + 'static {
 ///
 /// #[tokio::main]
 /// async fn main(){
-///     let sch = Scheduler::<EmptyTask, ()>::new(2, 10);
+///     let mut sch = Scheduler::<EmptyTask, ()>::new(2, 10);
+///     let mut storage = ArgStorage::new();
+///     storage.insert(Person { age: 7 });
+///     sch.set_arg_storage(storage);
 ///     let sch = sch.every(2).second().immediately_run().todo(execute(say_age)).await;
 ///     assert!(sch.is_scheduled("say_age"));
 /// }
 /// ```
-#[async_trait]
 pub trait ParseArgs: Sized + Clone {
     type Err: Error;
 
-    async fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err>;
+    fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err>;
 }
-macro_rules! impl_Executor {
+
+macro_rules! impl_executor {
     ( $($ty:ident),* $(,)? ) => {
         #[async_trait]
         #[allow(non_snake_case)]
@@ -99,37 +165,121 @@ macro_rules! impl_Executor {
             Fut: Future<Output = Result<(), Box<dyn Error>>> + Send,
             $($ty: ParseArgs + Send,)*
         {
-            async fn call(&self, args:&ArgStorage) -> Result<(), RucronError> {
+            async fn call(self, args:&ArgStorage, name: String) -> Result<(), RucronError> {
                 $(
-                    let $ty = match $ty::parse_args(args).await {
+                    let $ty = match $ty::parse_args(args) {
                         Ok(value) => value,
                         Err(e) => {
                             return Err(RucronError::ParseArgsError(e.to_string()))
                         },
                     };
                 )*
+                let start = Local::now();
                 self($($ty,)*).await.map_err(|e|RucronError::RunTimeError(e.to_string()))
+                .map_or_else(
+                    |e| {
+                        log::error!("{}", e);
+                        METRIC_STORAGE.get(&name).map_or_else(
+                            || unreachable!("unreachable"),
+                            |m| m.add_failure(NumberType::Error),
+                        );
+                    },
+                    |_| {
+                        METRIC_STORAGE.get(&name).map_or_else(
+                            || unreachable!("unreachable"),
+                            |m| {
+                                m.swap_time_and_add_runs(
+                                    Local::now().signed_duration_since(start).num_seconds() as usize,
+                                )
+                            },
+                        );
+                    },
+                );
+                Ok(())
             }
         }
     };
 }
 
-impl_Executor!(T1);
-impl_Executor!(T1, T2);
-impl_Executor!(T1, T2, T3);
-impl_Executor!(T1, T2, T3, T4);
-impl_Executor!(T1, T2, T3, T4, T5);
-impl_Executor!(T1, T2, T3, T4, T5, T6);
-impl_Executor!(T1, T2, T3, T4, T5, T6, T7);
-impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8);
-impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
-impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
-impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
-impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
-impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13);
-impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14);
-impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15);
-impl_Executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16);
+macro_rules! impl_sync_executor {
+    ( $($ty:ident),* $(,)? ) => {
+        #[allow(non_snake_case)]
+        impl<F, $($ty,)*> SyncExecutor<($($ty,)*)> for F
+        where
+            F: Fn($($ty,)*) -> Result<(), Box<dyn Error>> + Clone + Send + Sync + 'static,
+            $($ty: ParseArgs + Send + 'static,)*
+        {
+            fn call(self, args:&ArgStorage, name: String) -> Result<(), RucronError> {
+                $(
+                    let $ty = match $ty::parse_args(args) {
+                        Ok(value) => value,
+                        Err(e) => {
+                            return Err(RucronError::ParseArgsError(e.to_string()))
+                        },
+                    };
+                )*
+                let start = Local::now();
+                rayon::spawn(move ||{
+                    self($($ty,)*).map_err(|e|RucronError::RunTimeError(e.to_string()))
+                    .map_or_else(
+                        |e| {
+                            log::error!("{}", e);
+                            METRIC_STORAGE.get(&name).map_or_else(
+                                || unreachable!("unreachable"),
+                                |m| m.add_failure(NumberType::Error),
+                            );
+                        },
+                        |_| {
+                            METRIC_STORAGE.get(&name).map_or_else(
+                                || unreachable!("unreachable"),
+                                |m| {
+                                    m.swap_time_and_add_runs(
+                                        Local::now().signed_duration_since(start).num_seconds() as usize,
+                                    )
+                                },
+                            );
+                        },
+                    );
+                });
+                Ok(())
+            }
+        }
+    };
+}
+
+impl_executor!(T1);
+impl_executor!(T1, T2);
+impl_executor!(T1, T2, T3);
+impl_executor!(T1, T2, T3, T4);
+impl_executor!(T1, T2, T3, T4, T5);
+impl_executor!(T1, T2, T3, T4, T5, T6);
+impl_executor!(T1, T2, T3, T4, T5, T6, T7);
+impl_executor!(T1, T2, T3, T4, T5, T6, T7, T8);
+impl_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
+impl_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
+impl_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
+impl_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
+impl_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13);
+impl_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14);
+impl_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15);
+impl_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16);
+
+impl_sync_executor!(T1);
+impl_sync_executor!(T1, T2);
+impl_sync_executor!(T1, T2, T3);
+impl_sync_executor!(T1, T2, T3, T4);
+impl_sync_executor!(T1, T2, T3, T4, T5);
+impl_sync_executor!(T1, T2, T3, T4, T5, T6);
+impl_sync_executor!(T1, T2, T3, T4, T5, T6, T7);
+impl_sync_executor!(T1, T2, T3, T4, T5, T6, T7, T8);
+impl_sync_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
+impl_sync_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
+impl_sync_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
+impl_sync_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
+impl_sync_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13);
+impl_sync_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14);
+impl_sync_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15);
+impl_sync_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16);
 
 /// `Task` stores runtime parameters of a job which name is [`name`].
 #[derive(Debug, Clone)]
@@ -149,9 +299,8 @@ where
     TH: JobHandler + Send + Sync + 'static,
     L: Locker + 'static + Send + Sync + Clone,
 {
-    async fn call(&self, args: Arc<ArgStorage>, name: String) {
+    async fn call(self, args: Arc<ArgStorage>, name: String) {
         if self.name == name {
-            let task = self.task.clone();
             if self.need_lock && self.locker.is_some() {
                 let locker = self.locker.clone();
                 match locker {
@@ -161,11 +310,9 @@ where
                                 "[DEBUG] Spawns a new asynchronous task to run: {}",
                                 &name[..]
                             );
-                            tokio::spawn(async move {
-                                JobHandler::call(&task, args.clone(), name.clone()).await;
-                                log::debug!("[DEBUG] Had finished running: {}", &name[..]);
-                                unlock_and_record(locker, &name[..], args);
-                            });
+                            JobHandler::call(self.task, args.clone(), name.clone()).await;
+                            log::debug!("[DEBUG] Had finished running: {}", &name[..]);
+                            unlock_and_record(locker, &name[..], args);
                         }
                         Ok(b) if !b => {
                             METRIC_STORAGE.get(&self.name()).map_or_else(
@@ -193,17 +340,15 @@ where
                 );
                 for _ in (0..self.n_threads).into_iter() {
                     let name_copy = name.clone();
-                    let task_copy = task.clone();
+                    let task_copy = self.task.clone();
                     let args_copy = args.clone();
-                    tokio::spawn(async move {
-                        JobHandler::call(&task_copy, args_copy, name_copy.clone()).await;
-                        log::debug!("[DEBUG] Had finished running: {}", name_copy);
-                    });
+                    JobHandler::call(task_copy, args_copy, name_copy.clone()).await;
+                    log::debug!("[DEBUG] Had finished running: {}", name_copy);
                 }
             };
             return;
         } else {
-            JobHandler::call(&self.fallback, args, name).await;
+            JobHandler::call(self.fallback, args, name).await;
         }
     }
     #[inline(always)]
@@ -220,9 +365,17 @@ pub struct ExecutorWrapper<E, T> {
     _marker: PhantomData<T>,
 }
 
+/// [`SyncExecutorWrapper`] wraps the `SyncExecutor` and stores it's name.
+#[derive(Clone)]
+pub struct SyncExecutorWrapper<E, T> {
+    executor: E,
+    executor_name: String,
+    _marker: PhantomData<T>,
+}
+
 /// Create a `ExecutorWrapper` and add this job to the `Scheduler`.
 ///
-/// - `executor is the job to be run.
+/// - `executor` is the job to be run.
 ///
 /// # Panics
 ///
@@ -245,10 +398,7 @@ pub struct ExecutorWrapper<E, T> {
 ///     sch.every(2).second().todo(execute(foo)).await;
 /// }
 /// ```
-pub fn execute<E, T>(executor: E) -> ExecutorWrapper<E, T>
-where
-    E: Executor<T>,
-{
+pub fn execute<E, T>(executor: E) -> ExecutorWrapper<E, T> {
     let tname = type_name::<E>();
     let tokens: Vec<&str> = tname.split("::").collect();
     let name = match (*tokens).get(tokens.len() - 1) {
@@ -262,33 +412,74 @@ where
     }
 }
 
+impl<E, T> From<ExecutorWrapper<E, T>> for SyncExecutorWrapper<E, T> {
+    fn from(executor: ExecutorWrapper<E, T>) -> Self {
+        SyncExecutorWrapper {
+            executor: executor.executor,
+            executor_name: executor.executor_name,
+            _marker: executor._marker,
+        }
+    }
+}
+
+/// Create a `SyncExecutorWrapper` and add this job to the `Scheduler`.
+/// It is similar to `execute`, but the `executor` needs to be implemented `SyncExecutor`.
+/// If you want to run expensive CPU-bound tasks, please utilize this method to add tasks.
+/// In fact, it uses `rayon` to spawn thread to run the tasks.For more details see:
+/// [rayon](https://github.com/rayon-rs/rayon) and [blocking task](https://ryhl.io/blog/async-what-is-blocking).
+///
+/// # Panics
+///
+/// Panics if cann't parse name of [`E`] by `type_name`.
+///
+/// # Examples
+///
+/// ```
+/// use rucron::{sync_execute, Scheduler, EmptyTask};
+/// use std::{error::Error, sync::Arc, thread::sleep, time::Duration};
+///
+///
+/// fn foo() -> Result<(), Box<dyn Error>> {
+///     sleep(Duration::from_secs(2));
+///     println!("{}", "foo");
+///     Ok(())
+/// }
+/// #[tokio::main]
+/// async fn main(){
+///     let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+///     sch.every(2).second().todo(sync_execute(foo)).await;
+/// }
+/// ```
+pub fn sync_execute<E, T>(executor: E) -> SyncExecutorWrapper<E, T> {
+    SyncExecutorWrapper::from(execute(executor))
+}
+
 #[async_trait]
 impl<E, T> JobHandler for ExecutorWrapper<E, T>
 where
-    E: Executor<T> + Send + 'static + Sync,
+    E: Executor<T> + Send + 'static + Sync + Clone,
     T: Send + 'static + Sync,
 {
-    async fn call(&self, args: Arc<ArgStorage>, _name: String) {
-        let start = Local::now();
-        Executor::call(&self.executor, &*args).await.map_or_else(
-            |e| {
-                log::error!("{}", e);
-                METRIC_STORAGE.get(&self.name()).map_or_else(
-                    || unreachable!("unreachable"),
-                    |m| m.add_failure(NumberType::Error),
-                );
-            },
-            |_| {
-                METRIC_STORAGE.get(&self.name()).map_or_else(
-                    || unreachable!("unreachable"),
-                    |m| {
-                        m.swap_time_and_add_runs(
-                            Local::now().signed_duration_since(start).num_seconds() as usize,
-                        )
-                    },
-                );
-            },
-        );
+    async fn call(self, args: Arc<ArgStorage>, name: String) {
+        let exe = self.executor.clone();
+        Executor::call(exe, &*args, name).await.unwrap();
+    }
+
+    #[inline(always)]
+    fn name(&self) -> String {
+        self.executor_name.clone()
+    }
+}
+
+#[async_trait]
+impl<E, T> JobHandler for SyncExecutorWrapper<E, T>
+where
+    E: SyncExecutor<T> + Send + 'static + Sync + Clone,
+    T: Send + 'static + Sync,
+{
+    async fn call(self, args: Arc<ArgStorage>, name: String) {
+        let exe = self.executor.clone();
+        SyncExecutor::call(exe, &*args, name).unwrap();
     }
 
     #[inline(always)]

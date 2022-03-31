@@ -1,4 +1,5 @@
-use async_trait::async_trait;
+mod synchronous;
+
 use chrono::Duration as duration;
 use chrono::{DateTime, Datelike, Local, Timelike};
 use rucron::handler::JobHandler;
@@ -123,10 +124,9 @@ struct Person {
     age: i32,
 }
 
-#[async_trait]
 impl ParseArgs for Person {
     type Err = std::io::Error;
-    async fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err> {
+    fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err> {
         return Ok(args.get::<Person>().unwrap().clone());
     }
 }
@@ -736,7 +736,7 @@ async fn test_panic_job_with_arguments() {
 }
 
 async fn counter() -> Result<(), Box<dyn Error>> {
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    sleep(Duration::from_secs(2)).await;
     println!("counter");
     let mut guard = EIGHT.write().await;
     *guard += 1;

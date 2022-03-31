@@ -1,6 +1,6 @@
 [package]
 name = "rucron"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 authors = ["Ban Mengtao <jiuxie@outlook.com>"]
 keywords = ["rust", "cron", "crontab", "scheduler"]
@@ -9,18 +9,19 @@ license = "MIT"
 repository = "https://github.com/goldwind-ting/rucron/"
 
 [dependencies]
-tokio = { version = "1.14.0", features = ["time", "full"] }
-futures = "0.3.17"
+tokio = { version = "1.17.0", features = ["time", "full"] }
+futures = "0.3.21"
 lazy_static = "1.4.0"
-signal-hook = "0.3.12"
+signal-hook = "0.3.13"
 chrono = "0.4.19"
-http = "0.2.5"
-async-trait = "0.1.52"
-log = "0.4.14"
-dashmap = "5.0.0"
+http = "0.2.6"
+async-trait = "0.1.53"
+log = "0.4.16"
+dashmap = "5.2.0"
 thiserror = "1.0.30"
-serde_json = "1.0.74"
-serde = { version = "1.0.133", features = ["derive"] }
+serde_json = "1.0.79"
+serde = { version = "1.0.136", features = ["derive"] }
+rayon = "1.5.1"
 
 [dev-dependencies]
 redis = "0.21.4"
