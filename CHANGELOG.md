@@ -1,3 +1,9 @@
+# Version 0.1.3
+
+## Changed
+- Support blocking or CPU-bound job.
+- upgrade dependencies.
+
 # Version 0.1.2 
 
 ## Changed
