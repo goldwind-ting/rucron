@@ -212,13 +212,6 @@ async fn test_multiple_job() {
     let m: MetricTest = serde_json::from_str(&sing).unwrap();
     assert_eq!(11, m.n_scheduled);
     assert_eq!(10, m.n_success);
-    assert_eq!(0, m.t_total_elapsed);
-    assert_eq!(0, m.t_maximum_elapsed);
-    assert_eq!(0, m.t_minimum_elapsed);
-    assert_eq!(0, m.t_average_elapsed);
-    assert_eq!(0, m.n_error);
-    assert_eq!(0, m.n_failure_of_unlock);
-    assert_eq!(0, m.n_failure_of_lock);
 }
 
 #[tokio::test]
