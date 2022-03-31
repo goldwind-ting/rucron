@@ -16,7 +16,7 @@
 //!
 //! ``` rust
 //!
-//! use rucron::{execute, EmptyTask, Metric, Scheduler};
+//! use rucron::{execute, sync_execute, EmptyTask, Metric, Scheduler};
 //! use std::{error::Error, sync::atomic::Ordering};
 //! use chrono::{Local, DateTime, Duration};
 //!
@@ -33,6 +33,12 @@
 //!
 //! async fn ping() -> Result<(), Box<dyn Error>>{
 //!     println!("ping");
+//!     Ok(())
+//! }
+//!
+//! fn sync_task() -> Result<(), Box<dyn Error>>{
+//!     std::thread::sleep(std::time::Duration::from_secs(2));
+//!     println!("sync");
 //!     Ok(())
 //! }
 //!
@@ -57,7 +63,9 @@
 //!                 // Scheduler runs bar every monday at 9 am.
 //!                 .at().week(1, 9, 0, 0).todo(execute(bar)).await
 //!                 // Scheduler runs ping only once.
-//!                 .by(once).todo(execute(ping)).await;
+//!                 .by(once).todo(execute(ping)).await
+//!                 // Scheduler a CPU-bound or blocking task.
+//!                 .every(2).second().todo(sync_execute(sync_task)).await;
 //!     // Start running all jobs.
 //!     // sch.start().await;
 //! }
@@ -80,7 +88,7 @@
 //! #[async_trait]
 //! impl ParseArgs for Person {
 //!     type Err = std::io::Error;
-//!     async fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err> {
+//!     fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err> {
 //!         return Ok(args.get::<Person>().unwrap().clone());
 //!     }
 //! }
@@ -104,6 +112,44 @@
 //!     sch.set_arg_storage(arg);
 //!     let sch = sch.every(2).second().todo(execute(is_eight_years_old)).await;
 //!     // sch.start().await;
+//! }
+//!```
+//!
+//! You could also schedule blocking or CPU-bound tasks.
+//!
+//! ```rust
+//! use rucron::{sync_execute, ArgStorage, EmptyTask, ParseArgs, Scheduler};
+//! use std::error::Error;
+//!
+//!
+//! #[derive(Clone)]
+//! struct Person {
+//!     age: i32,
+//! }
+//!
+//! impl ParseArgs for Person {
+//!     type Err = std::io::Error;
+//!     fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err> {
+//!         return Ok(args.get::<Person>().unwrap().clone());
+//!     }
+//! }
+//!
+//! fn sync_set_age(p: Person) -> Result<(), Box<dyn Error>> {
+//!     if p.age == 8 {
+//!         println!("I am eight years old!");
+//!     };
+//!     Ok(())
+//! }
+//!
+//! #[tokio::test]
+//! async fn test_sync_set_age() {
+//!     let child = Person { age: 8 };
+//!     let mut arg = ArgStorage::new();
+//!     arg.insert(child);
+//!     let mut sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+//!     sch.set_arg_storage(arg);
+//!     let sch = sch.every(2).second().todo(sync_execute(sync_set_age)).await;
+//!     sch.start().await;
 //! }
 //!
 //! ```

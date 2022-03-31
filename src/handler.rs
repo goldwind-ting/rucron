@@ -39,29 +39,30 @@ where
 {
     async fn call(self, _args: &ArgStorage, name: String) -> Result<(), RucronError> {
         let start = Local::now();
-        tokio::spawn(async move{
+        tokio::spawn(async move {
             self()
-            .await
-            .map_err(|e| RucronError::RunTimeError(e.to_string()))
-            .map_or_else(
-                |e| {
-                    log::error!("{}", e);
-                    METRIC_STORAGE.get(&name).map_or_else(
-                        || unreachable!("unreachable"),
-                        |m| m.add_failure(NumberType::Error),
-                    );
-                },
-                |_| {
-                    METRIC_STORAGE.get(&name).map_or_else(
-                        || unreachable!("unreachable"),
-                        |m| {
-                            m.swap_time_and_add_runs(
-                                Local::now().signed_duration_since(start).num_seconds() as usize,
-                            )
-                        },
-                    );
-                },
-            );
+                .await
+                .map_err(|e| RucronError::RunTimeError(e.to_string()))
+                .map_or_else(
+                    |e| {
+                        log::error!("{}", e);
+                        METRIC_STORAGE.get(&name).map_or_else(
+                            || unreachable!("unreachable"),
+                            |m| m.add_failure(NumberType::Error),
+                        );
+                    },
+                    |_| {
+                        METRIC_STORAGE.get(&name).map_or_else(
+                            || unreachable!("unreachable"),
+                            |m| {
+                                m.swap_time_and_add_runs(
+                                    Local::now().signed_duration_since(start).num_seconds()
+                                        as usize,
+                                )
+                            },
+                        );
+                    },
+                );
         });
         Ok(())
     }
@@ -73,27 +74,29 @@ where
 {
     fn call(self, _args: &ArgStorage, name: String) -> Result<(), RucronError> {
         let start = Local::now();
-        rayon::spawn(move ||{
-            self().map_err(|e| RucronError::RunTimeError(e.to_string()))
-            .map_or_else(
-                |e| {
-                    log::error!("{}", e);
-                    METRIC_STORAGE.get(&name).map_or_else(
-                        || unreachable!("unreachable"),
-                        |m| m.add_failure(NumberType::Error),
-                    );
-                },
-                |_| {
-                    METRIC_STORAGE.get(&name).map_or_else(
-                        || unreachable!("unreachable"),
-                        |m| {
-                            m.swap_time_and_add_runs(
-                                Local::now().signed_duration_since(start).num_seconds() as usize,
-                            )
-                        },
-                    );
-                },
-            );
+        rayon::spawn(move || {
+            self()
+                .map_err(|e| RucronError::RunTimeError(e.to_string()))
+                .map_or_else(
+                    |e| {
+                        log::error!("{}", e);
+                        METRIC_STORAGE.get(&name).map_or_else(
+                            || unreachable!("unreachable"),
+                            |m| m.add_failure(NumberType::Error),
+                        );
+                    },
+                    |_| {
+                        METRIC_STORAGE.get(&name).map_or_else(
+                            || unreachable!("unreachable"),
+                            |m| {
+                                m.swap_time_and_add_runs(
+                                    Local::now().signed_duration_since(start).num_seconds()
+                                        as usize,
+                                )
+                            },
+                        );
+                    },
+                );
         });
         Ok(())
     }
@@ -127,7 +130,7 @@ pub trait JobHandler: Send + Sized + 'static {
 /// #[async_trait]
 /// impl ParseArgs for Person {
 ///     type Err = std::io::Error;
-///     async fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err> {
+///     fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err> {
 ///         return Ok(args.get::<Person>().unwrap().clone());
 ///     }
 /// }
@@ -138,7 +141,10 @@ pub trait JobHandler: Send + Sized + 'static {
 ///
 /// #[tokio::main]
 /// async fn main(){
-///     let sch = Scheduler::<EmptyTask, ()>::new(2, 10);
+///     let mut sch = Scheduler::<EmptyTask, ()>::new(2, 10);
+///     let mut storage = ArgStorage::new();
+///     storage.insert(Person { age: 7 });
+///     sch.set_arg_storage(storage);
 ///     let sch = sch.every(2).second().immediately_run().todo(execute(say_age)).await;
 ///     assert!(sch.is_scheduled("say_age"));
 /// }
@@ -418,6 +424,9 @@ impl<E, T> From<ExecutorWrapper<E, T>> for SyncExecutorWrapper<E, T> {
 
 /// Create a `SyncExecutorWrapper` and add this job to the `Scheduler`.
 /// It is similar to `execute`, but the `executor` needs to be implemented `SyncExecutor`.
+/// If you want to run expensive CPU-bound tasks, please utilize this method to add tasks.
+/// In fact, it uses `rayon` to spawn thread to run the tasks.For more details see:
+/// [rayon](https://github.com/rayon-rs/rayon) and [blocking task](https://ryhl.io/blog/async-what-is-blocking).
 ///
 /// # Panics
 ///
@@ -427,10 +436,11 @@ impl<E, T> From<ExecutorWrapper<E, T>> for SyncExecutorWrapper<E, T> {
 ///
 /// ```
 /// use rucron::{sync_execute, Scheduler, EmptyTask};
-/// use std::error::Error;
-/// use std::sync::Arc;
+/// use std::{error::Error, sync::Arc, thread::sleep, time::Duration};
+///
 ///
 /// fn foo() -> Result<(), Box<dyn Error>> {
+///     sleep(Duration::from_secs(2));
 ///     println!("{}", "foo");
 ///     Ok(())
 /// }

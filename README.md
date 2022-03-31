@@ -90,7 +90,7 @@ struct Person {
 #[async_trait]
 impl ParseArgs for Person {
     type Err = std::io::Error;
-    async fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err> {
+    fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err> {
         return Ok(args.get::<Person>().unwrap().clone());
     }
 }
@@ -116,12 +116,51 @@ async fn main() {
     sch.start().await;
 }
 ```
+
+You could also schedule blocking or CPU-bound tasks.
+
+```rust
+use rucron::{sync_execute, ArgStorage, EmptyTask, ParseArgs, Scheduler};
+use std::error::Error;
+
+
+#[derive(Clone)]
+struct Person {
+    age: i32,
+}
+
+impl ParseArgs for Person {
+    type Err = std::io::Error;
+    fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err> {
+        return Ok(args.get::<Person>().unwrap().clone());
+    }
+}
+
+fn sync_set_age(p: Person) -> Result<(), Box<dyn Error>> {
+    if p.age == 8 {
+        println!("I am eight years old!");
+    };
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_sync_set_age() {
+    let child = Person { age: 8 };
+    let mut arg = ArgStorage::new();
+    arg.insert(child);
+    let mut sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    sch.set_arg_storage(arg);
+    let sch = sch.every(2).second().todo(sync_execute(sync_set_age)).await;
+    sch.start().await;
+}
+```
+
 If you want to schedule jobs with distributed locks, please see [examples] directory.
 
 ## To Do List
 - [ ] Support smol and async-std Ecology.
 - [ ] Enable change timezone.
-- [ ] Support synchronous job.
+- [x] Support synchronous job.
 - [ ] Improve readability of annotation.
 - [ ] Add benchmark.
 
