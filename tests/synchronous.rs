@@ -94,7 +94,7 @@ fn sing() -> Result<(), Box<dyn Error>> {
 }
 
 fn cooking() -> Result<(), Box<dyn Error>> {
-    sleep(Duration::from_secs(3));
+    sleep(Duration::from_secs(2));
     println!("I am cooking!");
     Ok(())
 }
@@ -104,7 +104,7 @@ fn error_job() -> Result<(), Box<dyn Error>> {
 }
 
 async fn async_foo() -> Result<(), Box<dyn Error>> {
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     println!("foo");
     Ok(())
 }
@@ -164,10 +164,10 @@ async fn test_multiple_job(){
         .every(2)
         .second()
         .todo(sync_execute(sync_set_age)).await
-        .every(5)
+        .every(4)
         .second()
         .todo(sync_execute(learn_rust)).await
-        .every(4)
+        .every(2)
         .second()
         .todo(sync_execute(cooking)).await
         .every(3)
@@ -196,7 +196,6 @@ async fn test_multiple_job(){
     assert_eq!(0, m.n_failure_of_lock);
     let lr = get_metric_with_name("learn_rust").unwrap();
     let m: MetricTest = serde_json::from_str(&lr).unwrap();
-    println!("{:?}", &m);
     assert_eq!(3, m.n_scheduled);
     assert_eq!(2, m.n_success);
     assert_eq!(2, m.t_total_elapsed);
@@ -206,18 +205,28 @@ async fn test_multiple_job(){
     assert_eq!(0, m.n_error);
     assert_eq!(0, m.n_failure_of_unlock);
     assert_eq!(0, m.n_failure_of_lock);
-    // let cook = get_metric_with_name("cooking").unwrap();
-    // let m: MetricTest = serde_json::from_str(&cook).unwrap();
-    // println!("{:?}", &m);
-    // assert_eq!(3, m.n_scheduled);
-    // assert_eq!(2, m.n_success);
-    // assert_eq!(4, m.t_total_elapsed);
-    // assert_eq!(2, m.t_maximum_elapsed);
-    // assert_eq!(2, m.t_minimum_elapsed);
-    // assert_eq!(2, m.t_average_elapsed);
-    // assert_eq!(0, m.n_error);
-    // assert_eq!(0, m.n_failure_of_unlock);
-    // assert_eq!(0, m.n_failure_of_lock);
+    let cook = get_metric_with_name("cooking").unwrap();
+    let m: MetricTest = serde_json::from_str(&cook).unwrap();
+    assert_eq!(6, m.n_scheduled);
+    assert_eq!(4, m.n_success);
+    assert_eq!(8, m.t_total_elapsed);
+    assert_eq!(2, m.t_maximum_elapsed);
+    assert_eq!(2, m.t_minimum_elapsed);
+    assert_eq!(2, m.t_average_elapsed);
+    assert_eq!(0, m.n_error);
+    assert_eq!(0, m.n_failure_of_unlock);
+    assert_eq!(0, m.n_failure_of_lock);
+    let sing = get_metric_with_name("sing").unwrap();
+    let m: MetricTest = serde_json::from_str(&sing).unwrap();
+    assert_eq!(11, m.n_scheduled);
+    assert_eq!(10, m.n_success);
+    assert_eq!(0, m.t_total_elapsed);
+    assert_eq!(0, m.t_maximum_elapsed);
+    assert_eq!(0, m.t_minimum_elapsed);
+    assert_eq!(0, m.t_average_elapsed);
+    assert_eq!(0, m.n_error);
+    assert_eq!(0, m.n_failure_of_unlock);
+    assert_eq!(0, m.n_failure_of_lock);
 }
 
 
@@ -228,30 +237,34 @@ async fn test_mix_async(){
         .every(2)
         .second()
         .todo(execute(async_foo)).await
-        .every(1)
+        .every(4)
         .second()
         .todo(sync_execute(cooking)).await;
     tokio::spawn(async move{
         sch.start().await
     });
-    sleep(Duration::from_secs(15));
-}
-
-
-#[tokio::test]
-async fn test_cooking(){
-    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
-    let sch = sch
-    .every(1)
-    .second()
-    .todo(sync_execute(cooking)).await;
-    // .every(1).second().todo(execute(async_foo)).await;
-    
-    tokio::spawn(async move{
-        sch.start().await
-    });
-    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-    let lr = get_metric_with_name("cooking").unwrap();
-    let m: MetricTest = serde_json::from_str(&lr).unwrap();
-    println!("{:?}", m);
+    tokio::time::sleep(tokio::time::Duration::from_secs(11)).await;
+    let foo = get_metric_with_name("async_foo").unwrap();
+    let m: MetricTest = serde_json::from_str(&foo).unwrap();
+    assert_eq!(6, m.n_scheduled);
+    assert_eq!(4, m.n_success);
+    assert_eq!(8, m.t_total_elapsed);
+    assert_eq!(2, m.t_maximum_elapsed);
+    assert_eq!(2, m.t_minimum_elapsed);
+    assert_eq!(2, m.t_average_elapsed);
+    assert_eq!(0, m.n_error);
+    assert_eq!(0, m.n_failure_of_unlock);
+    assert_eq!(0, m.n_failure_of_lock);
+    let cooking = get_metric_with_name("cooking").unwrap();
+    let m: MetricTest = serde_json::from_str(&cooking).unwrap();
+    println!("{:?}", &m);
+    assert_eq!(3, m.n_scheduled);
+    assert_eq!(2, m.n_success);
+    assert_eq!(4, m.t_total_elapsed);
+    assert_eq!(2, m.t_maximum_elapsed);
+    assert_eq!(2, m.t_minimum_elapsed);
+    assert_eq!(2, m.t_average_elapsed);
+    assert_eq!(0, m.n_error);
+    assert_eq!(0, m.n_failure_of_unlock);
+    assert_eq!(0, m.n_failure_of_lock);
 }

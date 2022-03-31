@@ -736,7 +736,7 @@ async fn test_panic_job_with_arguments() {
 }
 
 async fn counter() -> Result<(), Box<dyn Error>> {
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    sleep(Duration::from_secs(2)).await;
     println!("counter");
     let mut guard = EIGHT.write().await;
     *guard += 1;

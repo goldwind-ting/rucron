@@ -23,7 +23,7 @@ use std::{
 ///
 #[async_trait]
 pub trait Executor<T>: Send + Sized + 'static {
-    async fn call(self, args: &ArgStorage) -> Result<(), RucronError>;
+    async fn call(self, args: &ArgStorage, name: String) -> Result<(), RucronError>;
 }
 
 /// The trait is similar to `Executor`, the task must be synchronous.
@@ -37,12 +37,33 @@ where
     F: Fn() -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<(), Box<dyn Error>>> + Send + 'static,
 {
-    async fn call(self, _args: &ArgStorage) -> Result<(), RucronError> {
+    async fn call(self, _args: &ArgStorage, name: String) -> Result<(), RucronError> {
+        let start = Local::now();
         tokio::spawn(async move{
             self()
             .await
             .map_err(|e| RucronError::RunTimeError(e.to_string()))
-        }).await.unwrap()
+            .map_or_else(
+                |e| {
+                    log::error!("{}", e);
+                    METRIC_STORAGE.get(&name).map_or_else(
+                        || unreachable!("unreachable"),
+                        |m| m.add_failure(NumberType::Error),
+                    );
+                },
+                |_| {
+                    METRIC_STORAGE.get(&name).map_or_else(
+                        || unreachable!("unreachable"),
+                        |m| {
+                            m.swap_time_and_add_runs(
+                                Local::now().signed_duration_since(start).num_seconds() as usize,
+                            )
+                        },
+                    );
+                },
+            );
+        });
+        Ok(())
     }
 }
 
@@ -138,7 +159,7 @@ macro_rules! impl_executor {
             Fut: Future<Output = Result<(), Box<dyn Error>>> + Send,
             $($ty: ParseArgs + Send,)*
         {
-            async fn call(self, args:&ArgStorage) -> Result<(), RucronError> {
+            async fn call(self, args:&ArgStorage, name: String) -> Result<(), RucronError> {
                 $(
                     let $ty = match $ty::parse_args(args) {
                         Ok(value) => value,
@@ -147,7 +168,28 @@ macro_rules! impl_executor {
                         },
                     };
                 )*
+                let start = Local::now();
                 self($($ty,)*).await.map_err(|e|RucronError::RunTimeError(e.to_string()))
+                .map_or_else(
+                    |e| {
+                        log::error!("{}", e);
+                        METRIC_STORAGE.get(&name).map_or_else(
+                            || unreachable!("unreachable"),
+                            |m| m.add_failure(NumberType::Error),
+                        );
+                    },
+                    |_| {
+                        METRIC_STORAGE.get(&name).map_or_else(
+                            || unreachable!("unreachable"),
+                            |m| {
+                                m.swap_time_and_add_runs(
+                                    Local::now().signed_duration_since(start).num_seconds() as usize,
+                                )
+                            },
+                        );
+                    },
+                );
+                Ok(())
             }
         }
     };
@@ -408,28 +450,9 @@ where
     E: Executor<T> + Send + 'static + Sync + Clone,
     T: Send + 'static + Sync,
 {
-    async fn call(self, args: Arc<ArgStorage>, _name: String) {
-        let start = Local::now();
+    async fn call(self, args: Arc<ArgStorage>, name: String) {
         let exe = self.executor.clone();
-        Executor::call(exe, &*args).await.map_or_else(
-            |e| {
-                log::error!("{}", e);
-                METRIC_STORAGE.get(&self.name()).map_or_else(
-                    || unreachable!("unreachable"),
-                    |m| m.add_failure(NumberType::Error),
-                );
-            },
-            |_| {
-                METRIC_STORAGE.get(&self.name()).map_or_else(
-                    || unreachable!("unreachable"),
-                    |m| {
-                        m.swap_time_and_add_runs(
-                            Local::now().signed_duration_since(start).num_seconds() as usize,
-                        )
-                    },
-                );
-            },
-        );
+        Executor::call(exe, &*args, name).await.unwrap();
     }
 
     #[inline(always)]
