@@ -53,6 +53,14 @@
 //!    }
 //! }
 //!
+//!
+//! fn sync_task() -> Result<(), Box<dyn Error>> {
+//!     std::thread::sleep(std::time::Duration::from_secs(2));
+//!     println!("sync task");
+//!     Ok(())
+//! }
+//!
+//!
 //! #[tokio::main]
 //! async fn main(){
 //!     // Create a scheduler with 10 capacity, it will checkout all runnable jobs every second
@@ -65,6 +73,8 @@
 //!                 // Scheduler runs ping only once.
 //!                 .by(once).todo(execute(ping)).await
 //!                 // Scheduler a CPU-bound or blocking task.
+//!                 .every(2).second().todo(sync_execute(sync_task)).await
+//!                 // Schedule a CPU-bound or blocking task.
 //!                 .every(2).second().todo(sync_execute(sync_task)).await;
 //!     // Start running all jobs.
 //!     // sch.start().await;
@@ -141,8 +151,8 @@
 //!     Ok(())
 //! }
 //!
-//! #[tokio::test]
-//! async fn test_sync_set_age() {
+//! #[tokio::main]
+//! async fn main() {
 //!     let child = Person { age: 8 };
 //!     let mut arg = ArgStorage::new();
 //!     arg.insert(child);

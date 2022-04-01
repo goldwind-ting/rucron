@@ -1,8 +1,14 @@
+# Version 0.1.4
+
+## Changed
+- Add publish workflow.
+- Update document.
+
 # Version 0.1.3
 
 ## Changed
 - Support blocking or CPU-bound job.
-- upgrade dependencies.
+- Upgrade dependencies.
 
 # Version 0.1.2 
 
