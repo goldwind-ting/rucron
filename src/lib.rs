@@ -54,11 +54,6 @@
 //! }
 //!
 //!
-//! fn sync_task() -> Result<(), Box<dyn Error>> {
-//!     std::thread::sleep(std::time::Duration::from_secs(2));
-//!     println!("sync task");
-//!     Ok(())
-//! }
 //!
 //!
 //! #[tokio::main]
@@ -159,7 +154,7 @@
 //!     let mut sch = Scheduler::<EmptyTask, ()>::new(1, 10);
 //!     sch.set_arg_storage(arg);
 //!     let sch = sch.every(2).second().todo(sync_execute(sync_set_age)).await;
-//!     sch.start().await;
+//!     //sch.start().await;
 //! }
 //!
 //! ```
