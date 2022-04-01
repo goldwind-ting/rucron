@@ -28,7 +28,7 @@ rucron = "*"
 ## Quick start:
 
 ```rust
-use rucron::{execute, EmptyTask, Metric, Scheduler};
+use rucron::{sync_execute, execute, EmptyTask, Metric, Scheduler};
 use std::{error::Error, sync::atomic::Ordering};
 use chrono::{Local, DateTime, Duration};
 
@@ -59,6 +59,12 @@ fn once(m: &Metric, last: &DateTime<Local>) -> Duration {
    }
 }
 
+fn sync_task() -> Result<(), Box<dyn Error>> {
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    println!("sync task");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main(){
     // Create a scheduler with 10 capacity, it will checkout all runnable jobs every second
@@ -69,7 +75,9 @@ async fn main(){
                 // Scheduler runs bar every monday at 9 am.
                 .at().week(1, 9, 0, 0).todo(execute(bar)).await
                 // Scheduler runs ping only once.
-                .by(once).todo(execute(ping)).await;
+                .by(once).todo(execute(ping)).await
+                // Schedule a CPU-bound or blocking task.
+                .every(2).second().todo(sync_execute(sync_task)).await;
     // Start running all jobs.
     sch.start().await;
 }
@@ -143,8 +151,8 @@ fn sync_set_age(p: Person) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[tokio::test]
-async fn test_sync_set_age() {
+#[tokio::main]
+async fn main() {
     let child = Person { age: 8 };
     let mut arg = ArgStorage::new();
     arg.insert(child);
