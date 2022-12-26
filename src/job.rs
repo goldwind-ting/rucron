@@ -216,23 +216,29 @@ impl Job {
             Some(TimeUnit::Second) | Some(TimeUnit::Minute) | Some(TimeUnit::Hour) => self.last_run,
             Some(TimeUnit::Day) => {
                 let mut midnight = Local
-                    .ymd(
+                    .with_ymd_and_hms(
                         self.last_run.year(),
                         self.last_run.month(),
                         self.last_run.day(),
+                        0,
+                        0,
+                        0,
                     )
-                    .and_hms(0, 0, 0);
+                    .unwrap();
                 midnight = midnight + self.at_time.unwrap_or(Duration::zero());
                 midnight
             }
             Some(TimeUnit::Week) => {
                 let mut midnight = Local
-                    .ymd(
+                    .with_ymd_and_hms(
                         self.last_run.year(),
                         self.last_run.month(),
                         self.last_run.day(),
+                        0,
+                        0,
+                        0,
                     )
-                    .and_hms(0, 0, 0);
+                    .unwrap();
                 midnight = midnight + self.at_time.unwrap_or(Duration::zero());
                 println!("name: {}, weekday: {:?}", self.job_name, self.weekday);
                 let deviation: i32 = self.weekday.unwrap().number_from_sunday() as i32

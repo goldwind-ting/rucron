@@ -9,23 +9,23 @@ license = "MIT"
 repository = "https://github.com/goldwind-ting/rucron/"
 
 [dependencies]
-tokio = { version = "1.17.0", features = ["time", "full"] }
-futures = "0.3.21"
+tokio = { version = "1.23.0", features = ["time", "full"] }
+futures = "0.3.25"
 lazy_static = "1.4.0"
-signal-hook = "0.3.13"
-chrono = "0.4.19"
-http = "0.2.6"
-async-trait = "0.1.53"
-log = "0.4.16"
-dashmap = "5.2.0"
-thiserror = "1.0.30"
-serde_json = "1.0.79"
-serde = { version = "1.0.136", features = ["derive"] }
-rayon = "1.5.1"
+signal-hook = "0.3.14"
+chrono = "0.4.23"
+http = "0.2.8"
+async-trait = "0.1.60"
+log = "0.4.17"
+dashmap = "5.4.0"
+thiserror = "1.0.38"
+serde_json = "1.0.91"
+serde = { version = "1.0.151", features = ["derive"] }
+rayon = "1.6.1"
 
 [dev-dependencies]
-redis = "0.21.4"
-rand = "0.8.4"
+redis = "0.22.1"
+fastrand = "1.8.0"
 
 [[example]]
 name = "redlocker"
