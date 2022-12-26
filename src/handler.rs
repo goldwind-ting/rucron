@@ -1,3 +1,4 @@
+use crate::async_rt::spawn;
 use crate::{
     error::RucronError, locker::Locker, metric::NumberType, unlock_and_record, METRIC_STORAGE,
 };
@@ -39,7 +40,7 @@ where
 {
     async fn call(self, _args: &ArgStorage, name: String) -> Result<(), RucronError> {
         let start = Local::now();
-        tokio::spawn(async move {
+        spawn(async move {
             self()
                 .await
                 .map_err(|e| RucronError::RunTimeError(e.to_string()))
@@ -113,7 +114,7 @@ pub trait JobHandler: Send + Sized + 'static {
 
 /// Implement the trait to parse or get arguments from [`ArgStorage`].
 ///
-/// The [`Scheduler`] will call `parse_args` and pass arguments to `job` when run job.
+/// The [`Scheduler`](super::Scheduler) will call `parse_args` and pass arguments to `job` when run job.
 /// # Examples
 ///
 /// ```
@@ -281,7 +282,7 @@ impl_sync_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14)
 impl_sync_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15);
 impl_sync_executor!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16);
 
-/// `Task` stores runtime parameters of a job which name is [`name`].
+/// `Task` stores runtime parameters of a job which name is `name`.
 #[derive(Debug, Clone)]
 pub struct Task<T, TH, L> {
     pub(crate) name: String,
@@ -379,7 +380,7 @@ pub struct SyncExecutorWrapper<E, T> {
 ///
 /// # Panics
 ///
-/// Panics if cann't parse name of [`E`] by `type_name`.
+/// Panics if cann't parse name of `E` by `type_name`.
 ///
 /// # Examples
 ///
@@ -430,7 +431,7 @@ impl<E, T> From<ExecutorWrapper<E, T>> for SyncExecutorWrapper<E, T> {
 ///
 /// # Panics
 ///
-/// Panics if cann't parse name of [`E`] by `type_name`.
+/// Panics if cann't parse name of `E` by `type_name`.
 ///
 /// # Examples
 ///
@@ -488,7 +489,7 @@ where
     }
 }
 
-/// The storage  stores all the arguments that [`jobs`] needed.
+/// The storage  stores all the arguments that `jobs` needed.
 ///
 /// It uses the extensions to store arguments, see the [docs] for more details.
 ///
