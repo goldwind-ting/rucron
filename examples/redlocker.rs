@@ -1,6 +1,5 @@
 extern crate rucron;
 
-use rand::Rng;
 use redis::{Client, Commands};
 use rucron::{
     execute, get_metric_with_name, ArgStorage, EmptyTask, Locker, RucronError, Scheduler,
@@ -40,9 +39,7 @@ impl Locker for RedisLocker {
 }
 
 fn gen_int() -> u64 {
-    let mut rng = rand::thread_rng();
-    let sec = rng.gen_range(8..14);
-    sec as u64
+    fastrand::u64(8..14)
 }
 
 async fn a_job() -> Result<(), Box<dyn Error>> {

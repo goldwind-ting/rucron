@@ -163,7 +163,7 @@ where
     pub fn need_lock(self) -> Self {
         {
             self.jobs.try_write().map_or_else(
-                |_| panic!("Cann't get write lock in [need_lock]"),
+                |_| panic!("Cann't acquire write lock in [need_lock]"),
                 |mut guard| {
                     guard.get_mut(self.size - 1).map_or_else(
                         || {
@@ -203,7 +203,7 @@ where
     pub fn n_threads(self, n: u8) -> Self {
         {
             self.jobs.try_write().map_or_else(
-                |_| panic!("Cann't get write lock in [n_threads]"),
+                |_| panic!("Cann't acquire write lock in [n_threads]"),
                 |mut guard| {
                     guard.get_mut(self.size - 1).map_or_else(
                         || {
@@ -466,7 +466,7 @@ where
     pub fn hour(self) -> Self {
         {
             self.jobs.try_write().map_or_else(
-                |_| panic!("Cann't get write lock in [hour]"),
+                |_| panic!("Cann't acquire write lock in [hour]"),
                 |mut guard| {
                     guard.get_mut(self.size - 1).map_or_else(
                         || {
@@ -516,7 +516,7 @@ where
     pub fn minute(self) -> Self {
         {
             self.jobs.try_write().map_or_else(
-                |_| panic!("Cann't get write lock in [minute]"),
+                |_| panic!("Cann't acquire write lock in [minute]"),
                 |mut guard| {
                     guard.get_mut(self.size - 1).map_or_else(
                         || {
@@ -566,7 +566,7 @@ where
     pub fn second(self) -> Self {
         {
             self.jobs.try_write().map_or_else(
-                |_| panic!("Cann't get write lock in [second]"),
+                |_| panic!("Cann't acquire write lock in [second]"),
                 |mut guard| {
                     guard.get_mut(self.size - 1).map_or_else(
                         || {
@@ -619,7 +619,7 @@ where
     pub fn day(self, h: i64, m: i64, s: i64) -> Self {
         {
             self.jobs.try_write().map_or_else(
-                |_| panic!("Cann't get write lock in [day]"),
+                |_| panic!("Cann't acquire write lock in [day]"),
                 |mut guard| {
                     guard.get_mut(self.size - 1).map_or_else(
                         || {
@@ -664,7 +664,7 @@ where
     pub fn week(self, w: i64, h: i64, m: i64, s: i64) -> Self {
         {
             self.jobs.try_write().map_or_else(
-                |_| panic!("Cann't get write lock in [week]"),
+                |_| panic!("Cann't acquire write lock in [week]"),
                 |mut guard| {
                     guard.get_mut(self.size - 1).map_or_else(
                         || {
@@ -684,12 +684,12 @@ where
 
     fn schedule_and_set_name(&self, name: String) {
         self.jobs.try_write().map_or_else(
-            |_| panic!(),
+            |_| panic!("Cann't acquire write lock in [todo]"),
             |mut guard| {
                 guard.get_mut(self.size - 1).map_or_else(
                     || {
                         panic!(
-                            "Cann't get write lock in [todo], job index: {}",
+                            "Cann't acquire write lock in [todo], job index: {}",
                             self.size - 1
                         )
                     },
@@ -1000,7 +1000,7 @@ where
     /// ```
     pub fn cancel_job(&mut self, job_name: &str) {
         self.jobs.try_write().map_or_else(
-            |_| panic!("Cann't get read lock in [cancel_job]"),
+            |_| panic!("Cann't get read lock in [cancel_job]."),
             |mut guard| {
                 match guard.iter().position(|j| j.get_job_name() == job_name) {
                     Some(i) => {
