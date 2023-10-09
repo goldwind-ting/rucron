@@ -56,3 +56,5 @@ jobs:
       run: cargo build --verbose
     - name: Default tests
       run: cargo test --verbose -- --test-threads 1
+    - name: Smol tests
+      run: cargo test --no-default-features --features smol -- --test-threads=1
