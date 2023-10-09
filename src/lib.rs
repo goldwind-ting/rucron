@@ -160,6 +160,7 @@
 //! ```
 //! [`gocron`]: https://github.com/go-co-op/gocron
 
+pub(crate) mod async_rt;
 pub mod error;
 pub mod handler;
 pub(crate) mod job;
@@ -169,6 +170,7 @@ pub mod scheduler;
 
 #[macro_use]
 extern crate lazy_static;
+pub use crate::async_rt::{channel, sleep, spawn, RwLock, Sender};
 pub use crate::error::RucronError;
 pub use crate::handler::{execute, sync_execute, ArgStorage, ParseArgs};
 pub use crate::locker::Locker;
@@ -179,7 +181,7 @@ use crate::metric::NumberType;
 use dashmap::DashMap;
 use serde_json;
 use std::sync::Arc;
-use tokio::time::Duration;
+use std::time::Duration;
 
 lazy_static! {
     static ref DEFAULT_ZERO_CALL_INTERVAL: Duration = Duration::from_secs(1);

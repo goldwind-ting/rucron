@@ -166,7 +166,7 @@ async fn main() {
 If you want to schedule jobs with distributed locks, please see [examples] directory.
 
 ## To Do List
-- [ ] Support smol and async-std Ecology.
+- [x] Support smol and tokio Ecology.
 - [ ] Enable change timezone.
 - [x] Support synchronous job.
 - [ ] Improve readability of annotation.

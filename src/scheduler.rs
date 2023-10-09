@@ -1,3 +1,4 @@
+use crate::async_rt::{channel, sleep, spawn, wait, Interval, RwLock};
 use crate::handler::{ArgStorage, JobHandler, Task};
 use crate::job::{Job, TimeUnit};
 use crate::{
@@ -5,11 +6,15 @@ use crate::{
 };
 
 use chrono::{DateTime, Duration as duration, Local};
-use std::{fmt, sync::Arc};
-use tokio::sync::{mpsc::channel, RwLock};
-use tokio::time::{self, sleep, Duration, Interval};
+use std::{
+    fmt,
+    sync::Arc,
+    time::{self, Duration},
+};
+
 extern crate lazy_static;
 use async_trait::async_trait;
+use select_macro::{count, select, select_variant};
 
 #[cfg(windows)]
 use signal_hook::consts::{SIGINT, SIGTERM};
@@ -112,7 +117,7 @@ where
         self.size
     }
 
-    /// Returns `true` if the job which name is [`name`] had been added to the `Scheduler`.
+    /// Returns `true` if the job which name is `name` had been added to the `Scheduler`.
     ///
     /// # Examples
     ///
@@ -134,17 +139,16 @@ where
     /// }
     /// ```
     pub fn is_scheduled(&self, name: &str) -> bool {
-        self.jobs
+        let guard = self
+            .jobs
             .try_read()
-            .and_then(|guard| {
-                for i in 0..guard.len() {
-                    if guard[i].get_job_name() == name {
-                        return Ok(true);
-                    }
-                }
-                return Ok(false);
-            })
-            .expect("Cann't get read lock in [is_scheduled]")
+            .expect("Cann't get read lock in [is_scheduled]");
+        for i in 0..guard.len() {
+            if guard[i].get_job_name() == name {
+                return true;
+            }
+        }
+        return false;
     }
 
     /// Set a job with `ArgStorage` which stores all arguments jobs need.
@@ -162,19 +166,18 @@ where
     /// Set a distributed locker for job which should not be run parallely.
     pub fn need_lock(self) -> Self {
         {
-            self.jobs.try_write().map_or_else(
-                |_| panic!("Cann't acquire write lock in [need_lock]"),
-                |mut guard| {
-                    guard.get_mut(self.size - 1).map_or_else(
-                        || {
-                            panic!(
-                                "Cann't get the job in [need_lock], index: {}",
-                                self.size - 1
-                            )
-                        },
-                        |job| job.need_locker(),
-                    );
+            let mut guard = self
+                .jobs
+                .try_write()
+                .expect("Cann't acquire write lock in [need_lock]");
+            guard.get_mut(self.size - 1).map_or_else(
+                || {
+                    panic!(
+                        "Cann't get the job in [need_lock], index: {}",
+                        self.size - 1
+                    )
                 },
+                |job| job.need_locker(),
             );
         }
         self
@@ -202,19 +205,18 @@ where
     /// ```
     pub fn n_threads(self, n: u8) -> Self {
         {
-            self.jobs.try_write().map_or_else(
-                |_| panic!("Cann't acquire write lock in [n_threads]"),
-                |mut guard| {
-                    guard.get_mut(self.size - 1).map_or_else(
-                        || {
-                            panic!(
-                                "Cann't get the job in [n_threads], index: {}",
-                                self.size - 1
-                            )
-                        },
-                        |job| job.threads(n),
-                    );
+            let mut guard = self
+                .jobs
+                .try_write()
+                .expect("Cann't acquire write lock in [n_threads]");
+            guard.get_mut(self.size - 1).map_or_else(
+                || {
+                    panic!(
+                        "Cann't get the job in [n_threads], index: {}",
+                        self.size - 1
+                    )
                 },
+                |job| job.threads(n),
             );
         }
         self
@@ -248,15 +250,14 @@ where
     /// ```
     pub fn get_job_names(&self) -> Vec<String> {
         let mut job_names = Vec::new();
-        self.jobs
+        let guard = self
+            .jobs
             .try_read()
-            .and_then(|guard| {
-                guard.iter().for_each(|job| {
-                    job_names.push(job.get_job_name());
-                });
-                Ok(job_names)
-            })
-            .expect("Cann't get write lock in [get_job_names]")
+            .expect("Cann't get write lock in [get_job_names]");
+        guard.iter().for_each(|job| {
+            job_names.push(job.get_job_name());
+        });
+        job_names
     }
 
     /// Return Number of seconds until next upcoming job starts running, return `None` if `size` is 0.
@@ -291,15 +292,14 @@ where
     /// }
     /// ```
     pub fn idle_seconds(&self) -> Option<i64> {
-        self.jobs
+        let guard = self
+            .jobs
             .try_read()
-            .and_then(|guard| {
-                Ok(guard
-                    .iter()
-                    .min_by(|x, y| x.get_next_run().cmp(&y.get_next_run()))
-                    .and_then(|job| Some(job.get_next_run().timestamp())))
-            })
-            .expect("Cann't get write lock in [idle_seconds]")
+            .expect("Cann't get write lock in [idle_seconds]");
+        guard
+            .iter()
+            .min_by(|x, y| x.get_next_run().cmp(&y.get_next_run()))
+            .and_then(|job| Some(job.get_next_run().timestamp()))
     }
 
     /// Add a new job to `Scheduler`.
@@ -424,15 +424,17 @@ where
     /// Run the job when call `todo` instead of waiting until  the `Scheduler` starts.  
     pub fn immediately_run(self) -> Self {
         {
-            self.jobs
+            let mut guard = self
+                .jobs
                 .try_write()
-                .and_then(|mut guard| {
-                    Ok(guard.get_mut(self.size - 1).and_then(|job| {
-                        job.immediately_run();
-                        Some(())
-                    }))
-                })
                 .expect("Cann't get write lock in [immediately_run]");
+            guard
+                .get_mut(self.size - 1)
+                .and_then(|job| {
+                    job.immediately_run();
+                    Some(())
+                })
+                .expect("Please create task firstly [immediately_run]");
         }
         self
     }
@@ -465,23 +467,22 @@ where
     /// ```
     pub fn hour(self) -> Self {
         {
-            self.jobs.try_write().map_or_else(
-                |_| panic!("Cann't acquire write lock in [hour]"),
-                |mut guard| {
-                    guard.get_mut(self.size - 1).map_or_else(
-                        || {
-                            panic!("Cann't get the job in [hour], job index: {}", self.size - 1);
-                        },
-                        |job| {
-                            if job.is_at() {
-                                panic!(
-                                    "At is only allowed daily or weekly job, job index: {}",
-                                    self.size - 1
-                                );
-                            }
-                            job.set_unit(TimeUnit::Hour);
-                        },
-                    );
+            let mut guard = self
+                .jobs
+                .try_write()
+                .expect("Cann't acquire write lock in [hour]");
+            guard.get_mut(self.size - 1).map_or_else(
+                || {
+                    panic!("Cann't get the job in [hour], job index: {}", self.size - 1);
+                },
+                |job| {
+                    if job.is_at() {
+                        panic!(
+                            "At is only allowed daily or weekly job, job index: {}",
+                            self.size - 1
+                        );
+                    }
+                    job.set_unit(TimeUnit::Hour);
                 },
             );
         }
@@ -515,23 +516,22 @@ where
     /// ```
     pub fn minute(self) -> Self {
         {
-            self.jobs.try_write().map_or_else(
-                |_| panic!("Cann't acquire write lock in [minute]"),
-                |mut guard| {
-                    guard.get_mut(self.size - 1).map_or_else(
-                        || {
-                            panic!("Cann't get the job in [minute], index: {}", self.size - 1);
-                        },
-                        |job| {
-                            if job.is_at() {
-                                panic!(
-                                    "At is only allowed daily or weekly job, job index: {}",
-                                    self.size - 1
-                                );
-                            }
-                            job.set_unit(TimeUnit::Minute);
-                        },
-                    );
+            let mut guard = self
+                .jobs
+                .try_write()
+                .expect("Cann't acquire write lock in [minute]");
+            guard.get_mut(self.size - 1).map_or_else(
+                || {
+                    panic!("Cann't get the job in [minute], index: {}", self.size - 1);
+                },
+                |job| {
+                    if job.is_at() {
+                        panic!(
+                            "At is only allowed daily or weekly job, job index: {}",
+                            self.size - 1
+                        );
+                    }
+                    job.set_unit(TimeUnit::Minute);
                 },
             );
         }
@@ -565,26 +565,25 @@ where
     /// ```
     pub fn second(self) -> Self {
         {
-            self.jobs.try_write().map_or_else(
-                |_| panic!("Cann't acquire write lock in [second]"),
-                |mut guard| {
-                    guard.get_mut(self.size - 1).map_or_else(
-                        || {
-                            panic!(
-                                "Cann't get the job in [second], job index: {}",
-                                self.size - 1
-                            );
-                        },
-                        |job| {
-                            if job.is_at() {
-                                panic!(
-                                    "At is only allowed daily or weekly job, job index: {}",
-                                    self.size - 1
-                                );
-                            }
-                            job.set_unit(TimeUnit::Second);
-                        },
+            let mut guard = self
+                .jobs
+                .try_write()
+                .expect("Cann't acquire write lock in [second]");
+            guard.get_mut(self.size - 1).map_or_else(
+                || {
+                    panic!(
+                        "Cann't get the job in [second], job index: {}",
+                        self.size - 1
                     );
+                },
+                |job| {
+                    if job.is_at() {
+                        panic!(
+                            "At is only allowed daily or weekly job, job index: {}",
+                            self.size - 1
+                        );
+                    }
+                    job.set_unit(TimeUnit::Second);
                 },
             );
         }
@@ -618,18 +617,17 @@ where
     /// ```
     pub fn day(self, h: i64, m: i64, s: i64) -> Self {
         {
-            self.jobs.try_write().map_or_else(
-                |_| panic!("Cann't acquire write lock in [day]"),
-                |mut guard| {
-                    guard.get_mut(self.size - 1).map_or_else(
-                        || {
-                            panic!("Cann't get the job in [day], job index: {}", self.size - 1);
-                        },
-                        |job| {
-                            job.set_unit(TimeUnit::Day);
-                            job.set_at_time(h, m, s);
-                        },
-                    );
+            let mut guard = self
+                .jobs
+                .try_write()
+                .expect("Cann't acquire write lock in [day]");
+            guard.get_mut(self.size - 1).map_or_else(
+                || {
+                    panic!("Cann't get the job in [day], job index: {}", self.size - 1);
+                },
+                |job| {
+                    job.set_unit(TimeUnit::Day);
+                    job.set_at_time(h, m, s);
                 },
             );
         }
@@ -663,19 +661,18 @@ where
     /// ```
     pub fn week(self, w: i64, h: i64, m: i64, s: i64) -> Self {
         {
-            self.jobs.try_write().map_or_else(
-                |_| panic!("Cann't acquire write lock in [week]"),
-                |mut guard| {
-                    guard.get_mut(self.size - 1).map_or_else(
-                        || {
-                            panic!("Cann't get the job in [week], job index: {}", self.size - 1);
-                        },
-                        |job| {
-                            job.set_unit(TimeUnit::Week);
-                            job.set_at_time(h, m, s);
-                            job.set_weekday(w);
-                        },
-                    );
+            let mut guard = self
+                .jobs
+                .try_write()
+                .expect("Cann't acquire write lock in [week]");
+            guard.get_mut(self.size - 1).map_or_else(
+                || {
+                    panic!("Cann't get the job in [week], job index: {}", self.size - 1);
+                },
+                |job| {
+                    job.set_unit(TimeUnit::Week);
+                    job.set_at_time(h, m, s);
+                    job.set_weekday(w);
                 },
             );
         }
@@ -683,22 +680,21 @@ where
     }
 
     fn schedule_and_set_name(&self, name: String) {
-        self.jobs.try_write().map_or_else(
-            |_| panic!("Cann't acquire write lock in [todo]"),
-            |mut guard| {
-                guard.get_mut(self.size - 1).map_or_else(
-                    || {
-                        panic!(
-                            "Cann't acquire write lock in [todo], job index: {}",
-                            self.size - 1
-                        )
-                    },
-                    |job| {
-                        METRIC_STORAGE.insert(name.clone(), Metric::default());
-                        job.set_name(name.clone());
-                        job.schedule_run_time();
-                    },
-                );
+        let mut guard = self
+            .jobs
+            .try_write()
+            .expect("Cann't acquire write lock in [todo]");
+        guard.get_mut(self.size - 1).map_or_else(
+            || {
+                panic!(
+                    "Cann't acquire write lock in [todo], job index: {}",
+                    self.size - 1
+                )
+            },
+            |job| {
+                METRIC_STORAGE.insert(name.clone(), Metric::default());
+                job.set_name(name.clone());
+                job.schedule_run_time();
             },
         );
     }
@@ -761,7 +757,7 @@ where
             if cur_job.get_immediately_run() {
                 let cur_task = task.clone();
                 let args = self.arg_storage.clone().unwrap();
-                tokio::spawn(async move {
+                spawn(async move {
                     JobHandler::call(cur_task, args, name).await;
                 });
             }
@@ -805,15 +801,14 @@ where
     /// }
     /// ```
     pub fn next_run(&self) -> Option<String> {
-        self.jobs
+        let guard = self
+            .jobs
             .try_read()
-            .and_then(|guard| {
-                Ok(guard
-                    .iter()
-                    .min_by(|a, b| a.get_next_run().cmp(&b.get_next_run()))
-                    .map_or(None, |job| Some(job.get_job_name())))
-            })
-            .expect("Cann't get read lock in [next_run]")
+            .expect("Cann't get read lock in [next_run]");
+        guard
+            .iter()
+            .min_by(|a, b| a.get_next_run().cmp(&b.get_next_run()))
+            .map_or(None, |job| Some(job.get_job_name()))
     }
 
     /// Returns a day-of-week number of job starting from Monday = 1 by job name.
@@ -843,17 +838,16 @@ where
     /// }
     /// ```
     pub fn weekday_with_name(&self, job_name: &str) -> Option<u32> {
-        self.jobs
+        let guard = self
+            .jobs
             .try_read()
-            .and_then(|guard| {
-                for job in guard.iter() {
-                    if job.get_job_name().as_str() == job_name {
-                        return Ok(job.get_weekday().and_then(|w| Some(w.number_from_monday())));
-                    }
-                }
-                Ok(None)
-            })
-            .expect("Cann't get read lock in [weekday_with_name]")
+            .expect("Cann't get read lock in [weekday_with_name]");
+        for job in guard.iter() {
+            if job.get_job_name().as_str() == job_name {
+                return job.get_weekday().and_then(|w| Some(w.number_from_monday()));
+            }
+        }
+        None
     }
 
     /// Return the run time unit of job by job name, return `None` if job does not exist.
@@ -882,17 +876,16 @@ where
     /// }
     /// ```
     pub fn time_unit_with_name(&self, job_name: &str) -> Option<i8> {
-        self.jobs
+        let guard = self
+            .jobs
             .try_read()
-            .and_then(|guard| {
-                for job in guard.iter() {
-                    if job.get_job_name().as_str() == job_name {
-                        return Ok(job.get_time_unit());
-                    }
-                }
-                Ok(None)
-            })
-            .expect("Cann't get read lock in [time_unit_with_name]")
+            .expect("Cann't get read lock in [time_unit_with_name]");
+        for job in guard.iter() {
+            if job.get_job_name().as_str() == job_name {
+                return job.get_time_unit();
+            }
+        }
+        None
     }
 
     /// Return next run time of job by job name, return None if the job does not exist.
@@ -919,17 +912,16 @@ where
     /// }
     /// ```
     pub fn next_run_with_name(&self, job_name: &str) -> Option<i64> {
-        self.jobs
+        let guard = self
+            .jobs
             .try_read()
-            .and_then(|guard| {
-                for job in guard.iter() {
-                    if job.get_job_name().as_str() == job_name {
-                        return Ok(Some(job.get_next_run().timestamp()));
-                    }
-                }
-                Ok(None)
-            })
-            .expect("Cann't get read lock in [next_run_with_name]")
+            .expect("Cann't get read lock in [next_run_with_name]");
+        for job in guard.iter() {
+            if job.get_job_name().as_str() == job_name {
+                return Some(job.get_next_run().timestamp());
+            }
+        }
+        None
     }
 
     /// Return last run time of job by job name, return None if the job does not exist.
@@ -956,17 +948,16 @@ where
     /// }
     /// ```
     pub fn last_run_with_name(&self, job_name: &str) -> Option<i64> {
-        self.jobs
+        let guard = self
+            .jobs
             .try_read()
-            .and_then(|guard| {
-                for job in guard.iter() {
-                    if job.get_job_name().as_str() == job_name {
-                        return Ok(Some(job.get_last_run().timestamp()));
-                    }
-                }
-                Ok(None)
-            })
-            .expect("Cann't get read lock in [last_run_with_name]")
+            .expect("Cann't get read lock in [last_run_with_name]");
+        for job in guard.iter() {
+            if job.get_job_name().as_str() == job_name {
+                return Some(job.get_last_run().timestamp());
+            }
+        }
+        None
     }
 
     /// Delete a scheduled job.
@@ -999,48 +990,35 @@ where
     /// }
     /// ```
     pub fn cancel_job(&mut self, job_name: &str) {
-        self.jobs.try_write().map_or_else(
-            |_| panic!("Cann't get read lock in [cancel_job]."),
-            |mut guard| {
-                match guard.iter().position(|j| j.get_job_name() == job_name) {
-                    Some(i) => {
-                        guard.remove(i);
-                        self.size -= 1;
-                    }
-                    None => {}
-                };
-            },
-        );
-    }
-
-    #[inline(always)]
-    fn gen_call_interval(&self, interval: u64) -> Interval {
-        if interval <= 0 {
-            time::interval(*DEFAULT_ZERO_CALL_INTERVAL)
-        } else {
-            time::interval(time::Duration::from_secs(interval))
-        }
+        let mut guard = self
+            .jobs
+            .try_write()
+            .expect("Cann't get read lock in [cancel_job].");
+        match guard.iter().position(|j| j.get_job_name() == job_name) {
+            Some(i) => {
+                guard.remove(i);
+                self.size -= 1;
+            }
+            None => {}
+        };
     }
 
     /// When `scheduler` catched termination signals, it will stop scheduling jobs, and if some jobs need locker, it will execute `unlock`.
     fn drop(&self) {
-        self.jobs.try_read().map_or_else(
-            |e| {
-                panic!("Cann't get read lock in [drop], error: {}", e);
-            },
-            |guard| {
-                guard.iter().for_each(|job| {
-                    if job.is_need_lock() {
-                        let name = job.get_job_name();
-                        unlock_and_record(
-                            self.locker.clone().unwrap(),
-                            &name,
-                            self.arg_storage.clone().unwrap(),
-                        )
-                    }
-                });
-            },
-        );
+        let guard = self
+            .jobs
+            .try_read()
+            .expect("Cann't acquire read lock in [drop]");
+        guard.iter().for_each(|job| {
+            if job.is_need_lock() {
+                let name = job.get_job_name();
+                unlock_and_record(
+                    self.locker.clone().unwrap(),
+                    &name,
+                    self.arg_storage.clone().unwrap(),
+                )
+            }
+        });
     }
 
     /// Start scheduler and run all jobs,  
@@ -1076,7 +1054,10 @@ where
     /// }
     /// ```
     pub async fn start(&self) {
-        let (send, mut recv) = channel(1);
+        #[cfg(feature = "tokio")]
+        let (send, mut recv) = channel::<()>();
+        #[cfg(feature = "smol")]
+        let (send, recv) = channel::<()>();
         let term = Arc::new(AtomicBool::new(false));
         {
             #[cfg(not(windows))]
@@ -1089,13 +1070,13 @@ where
         {
             #[cfg(windows)]
             for sig in vec![SIGINT, SIGTERM] {
-                signal_hook::flag::register_conditional_shutdown(*sig, 1, Arc::clone(&term))
+                signal_hook::flag::register_conditional_shutdown(sig, 1, Arc::clone(&term))
                     .unwrap();
-                signal_hook::flag::register(*sig, Arc::clone(&term)).unwrap();
+                signal_hook::flag::register(sig, Arc::clone(&term)).unwrap();
             }
         }
         log::info!("[INFO] Have registered [TERM_SIGNALS] signal!");
-        let send_trigger = tokio::spawn(async move {
+        let send_trigger = wait(async move {
             while !term.load(Ordering::Relaxed) {
                 sleep(Duration::from_secs(1)).await;
             }
@@ -1104,16 +1085,20 @@ where
             });
         });
         let jobs = self.jobs.clone();
-        let inter = self.scan_interval;
+        let inter = if self.scan_interval == 0 {
+            *DEFAULT_ZERO_CALL_INTERVAL
+        } else {
+            time::Duration::from_secs(self.scan_interval)
+        };
         let task = self.task.clone();
         let storage = self.arg_storage.clone();
-        let mut interval: Interval = self.gen_call_interval(inter);
-        let recv_trigger = tokio::spawn(async move {
+        let mut interval: Interval = Interval::new(inter).await;
+        let recv_trigger = wait(async move {
             loop {
                 let jobs_loop = jobs.clone();
                 let task_loop = task.clone();
                 let storage_loop = storage.clone();
-                tokio::select! {
+                select! {
                 _ = interval.tick() => {
                     let mut size:i64 = -1;
                     {
@@ -1142,7 +1127,7 @@ where
                             guard[i].schedule_run_time();
                         }
                     }
-                    tokio::spawn(async move{
+                    spawn(async move{
                         let guard = jobs_loop.read().await;
                         for i in (0..size as usize).into_iter(){
                             let task_copy = task_loop.clone();
@@ -1151,7 +1136,7 @@ where
                         };
                     });
                 },
-                Some(_) = recv.recv() => {
+                _ = recv.recv() => {
                         log::info!("[INFO] Shutting down!!!");
                         break;
                 },
@@ -1159,7 +1144,7 @@ where
             }
         });
         log::info!("[INFO] Have started!");
-        let _ = tokio::join!(send_trigger, recv_trigger);
+        let _ = futures::join!(send_trigger, recv_trigger);
         self.drop();
         return;
     }
