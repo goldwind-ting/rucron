@@ -15,14 +15,18 @@
   </a>  
 
 Rucron is a lightweight job scheduler, it is similar to [gocron](https://github.com/go-co-op/gocron) or linux crontab, and it is very easy to use.
-But now it only supports asynchronous job by the runtime provided by `tokio`.
+Now rucron is compatible with the `smol` and `tokio`.
 
 ## Usage
 Add this to your Cargo.toml
 
 ```toml
 [dependencies]
-rucron = "*"
+# PICK ONE OF THE FOLLOWING:
+# tokio
+rucron = { version = "0.1.5", features = [ "tokio" ] }
+# smol
+rucron = { version = "0.1.5", features = [ "smol" ] }
 ```
 
 ## Quick start:
@@ -81,6 +85,17 @@ async fn main(){
     // Start running all jobs.
     sch.start().await;
 }
+
+/*
+If you use the smol feature:
+fn main(){
+    let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+    smol::block_on(async move {
+        let sch = sch.every(2).second().todo(execute(ping)).await;
+        sch.start().await;
+    });
+}
+*/
 ```
 Schedule parameterized job:
 

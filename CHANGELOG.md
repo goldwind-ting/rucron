@@ -1,3 +1,9 @@
+# Version 0.1.5
+
+## Changed
+- Add `smol`` feature.
+- Update example.
+
 # Version 0.1.4
 
 ## Changed

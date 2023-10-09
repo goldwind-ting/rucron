@@ -2,10 +2,9 @@ extern crate rucron;
 
 use redis::{Client, Commands};
 use rucron::{
-    execute, get_metric_with_name, ArgStorage, EmptyTask, Locker, RucronError, Scheduler,
+    execute, get_metric_with_name, sleep, ArgStorage, EmptyTask, Locker, RucronError, Scheduler,
 };
 use std::{error::Error, sync::Arc};
-use tokio::sync::mpsc::channel;
 
 /// Distributed locks with redis
 #[derive(Clone)]
@@ -43,15 +42,9 @@ fn gen_int() -> u64 {
 }
 
 async fn a_job() -> Result<(), Box<dyn Error>> {
-    let (tx, mut rx) = channel(1);
     let sec = gen_int();
-    tokio::spawn(async move {
-        std::thread::sleep(std::time::Duration::from_secs(sec as u64));
-        tx.send(1).await.unwrap();
-    });
-    if let Some(v) = rx.recv().await {
-        println!("end job! {}", v);
-    };
+    sleep(std::time::Duration::from_secs(sec as u64)).await;
+    println!("end job!");
     Ok(())
 }
 
