@@ -1,3 +1,9 @@
+# Version 0.1.6
+
+## Changed
+- Fix typo.
+- Check job name when start scheduler.
+
 # Version 0.1.5
 
 ## Changed

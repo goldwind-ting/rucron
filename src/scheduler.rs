@@ -48,7 +48,7 @@ where
     }
 
     fn name(&self) -> String {
-        return self.task.name();
+        self.task.name()
     }
 }
 
@@ -71,7 +71,7 @@ impl Clone for EmptyTask {
 impl JobHandler for EmptyTask {
     async fn call(self, _args: Arc<ArgStorage>, _name: String) {}
     fn name(&self) -> String {
-        return "EmptyTask".into();
+        "EmptyTask".into()
     }
 }
 
@@ -148,7 +148,7 @@ where
                 return true;
             }
         }
-        return false;
+        false
     }
 
     /// Set a job with `ArgStorage` which stores all arguments jobs need.
@@ -1021,6 +1021,12 @@ where
         });
     }
 
+    fn check_job_name(&self) {
+        if self.get_job_names().iter().any(|name| name.is_empty()) {
+            panic!("Empty job name!");
+        }
+    }
+
     /// Start scheduler and run all jobs,  
     ///
     /// The scheduler will spawn a asynchronous task for each *runnable* job to execute the job, and
@@ -1054,6 +1060,7 @@ where
     /// }
     /// ```
     pub async fn start(&self) {
+        self.check_job_name();
         #[cfg(feature = "tokio")]
         let (send, mut recv) = channel::<()>();
         #[cfg(feature = "smol")]

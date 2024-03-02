@@ -2,6 +2,7 @@ use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Weekday};
 use std::{fmt, sync::atomic::Ordering};
 
 use crate::{metric::Metric, METRIC_STORAGE};
+
 /// Time unit.
 pub(crate) enum TimeUnit {
     Second,
@@ -258,12 +259,11 @@ impl Job {
             self.last_run = self.next_run;
             self.next_run = next_run;
         }
-        METRIC_STORAGE.get(&self.job_name).map_or_else(
-            || unreachable!("unreachable"),
-            |m| {
-                m.n_scheduled.fetch_add(1, Ordering::SeqCst);
-            },
-        );
+        METRIC_STORAGE
+            .get(&self.job_name)
+            .unwrap()
+            .n_scheduled
+            .fetch_add(1, Ordering::SeqCst);
     }
 
     #[inline(always)]

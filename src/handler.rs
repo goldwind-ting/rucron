@@ -1,10 +1,10 @@
 use crate::async_rt::spawn;
 use crate::{
-    error::RucronError, locker::Locker, metric::NumberType, unlock_and_record, METRIC_STORAGE,
+    error::RucronError, locker::Locker, metric::MetricType, unlock_and_record, METRIC_STORAGE,
 };
 
 use async_trait::async_trait;
-use chrono::Local;
+use chrono::{DateTime, Local};
 use futures::future::Future;
 use http::Extensions;
 use std::{
@@ -24,12 +24,30 @@ use std::{
 ///
 #[async_trait]
 pub trait Executor<T>: Send + Sized + 'static {
-    async fn call(self, args: &ArgStorage, name: String) -> Result<(), RucronError>;
+    async fn call(self, args: &ArgStorage, name: String);
 }
 
 /// The trait is similar to `Executor`, the task must be synchronous.
 pub trait SyncExecutor<T> {
-    fn call(self, args: &ArgStorage, name: String) -> Result<(), RucronError>;
+    fn call(self, args: &ArgStorage, name: String);
+}
+
+fn handle_result(res: Result<(), Box<dyn Error>>, name: &str, start: DateTime<Local>) {
+    res.map_err(|e| RucronError::RunTimeError(e.to_string()))
+        .map_or_else(
+            |e| {
+                log::error!("{}", e);
+                METRIC_STORAGE
+                    .get(name)
+                    .unwrap()
+                    .add_failure(MetricType::Error);
+            },
+            |_| {
+                METRIC_STORAGE.get(name).unwrap().swap_time_and_add_runs(
+                    Local::now().signed_duration_since(start).num_seconds() as usize,
+                );
+            },
+        );
 }
 
 #[async_trait]
@@ -38,34 +56,11 @@ where
     F: Fn() -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<(), Box<dyn Error>>> + Send + 'static,
 {
-    async fn call(self, _args: &ArgStorage, name: String) -> Result<(), RucronError> {
+    async fn call(self, _args: &ArgStorage, name: String) {
         let start = Local::now();
         spawn(async move {
-            self()
-                .await
-                .map_err(|e| RucronError::RunTimeError(e.to_string()))
-                .map_or_else(
-                    |e| {
-                        log::error!("{}", e);
-                        METRIC_STORAGE.get(&name).map_or_else(
-                            || unreachable!("unreachable"),
-                            |m| m.add_failure(NumberType::Error),
-                        );
-                    },
-                    |_| {
-                        METRIC_STORAGE.get(&name).map_or_else(
-                            || unreachable!("unreachable"),
-                            |m| {
-                                m.swap_time_and_add_runs(
-                                    Local::now().signed_duration_since(start).num_seconds()
-                                        as usize,
-                                )
-                            },
-                        );
-                    },
-                );
+            handle_result(self().await, &name, start);
         });
-        Ok(())
     }
 }
 
@@ -73,33 +68,11 @@ impl<Func> SyncExecutor<()> for Func
 where
     Func: Fn() -> Result<(), Box<dyn Error>> + Send + Sync + 'static,
 {
-    fn call(self, _args: &ArgStorage, name: String) -> Result<(), RucronError> {
+    fn call(self, _args: &ArgStorage, name: String) {
         let start = Local::now();
         rayon::spawn(move || {
-            self()
-                .map_err(|e| RucronError::RunTimeError(e.to_string()))
-                .map_or_else(
-                    |e| {
-                        log::error!("{}", e);
-                        METRIC_STORAGE.get(&name).map_or_else(
-                            || unreachable!("unreachable"),
-                            |m| m.add_failure(NumberType::Error),
-                        );
-                    },
-                    |_| {
-                        METRIC_STORAGE.get(&name).map_or_else(
-                            || unreachable!("unreachable"),
-                            |m| {
-                                m.swap_time_and_add_runs(
-                                    Local::now().signed_duration_since(start).num_seconds()
-                                        as usize,
-                                )
-                            },
-                        );
-                    },
-                );
+            handle_result(self(), &name, start);
         });
-        Ok(())
     }
 }
 
@@ -164,39 +137,22 @@ macro_rules! impl_executor {
         where
             F: Fn($($ty,)*) -> Fut + Clone + Send + Sync + 'static,
             Fut: Future<Output = Result<(), Box<dyn Error>>> + Send,
-            $($ty: ParseArgs + Send,)*
+            $($ty: ParseArgs + Send + 'static,)*
         {
-            async fn call(self, args:&ArgStorage, name: String) -> Result<(), RucronError> {
+            async fn call(self, args:&ArgStorage, name: String) {
+                let start = Local::now();
                 $(
                     let $ty = match $ty::parse_args(args) {
                         Ok(value) => value,
                         Err(e) => {
-                            return Err(RucronError::ParseArgsError(e.to_string()))
+                            handle_result(Err(Box::new(e)), &name, start);
+                            return;
                         },
                     };
                 )*
-                let start = Local::now();
-                self($($ty,)*).await.map_err(|e|RucronError::RunTimeError(e.to_string()))
-                .map_or_else(
-                    |e| {
-                        log::error!("{}", e);
-                        METRIC_STORAGE.get(&name).map_or_else(
-                            || unreachable!("unreachable"),
-                            |m| m.add_failure(NumberType::Error),
-                        );
-                    },
-                    |_| {
-                        METRIC_STORAGE.get(&name).map_or_else(
-                            || unreachable!("unreachable"),
-                            |m| {
-                                m.swap_time_and_add_runs(
-                                    Local::now().signed_duration_since(start).num_seconds() as usize,
-                                )
-                            },
-                        );
-                    },
-                );
-                Ok(())
+                spawn(async move {
+                    handle_result(self($($ty,)*).await, &name, start);
+                });
             }
         }
     };
@@ -210,39 +166,20 @@ macro_rules! impl_sync_executor {
             F: Fn($($ty,)*) -> Result<(), Box<dyn Error>> + Clone + Send + Sync + 'static,
             $($ty: ParseArgs + Send + 'static,)*
         {
-            fn call(self, args:&ArgStorage, name: String) -> Result<(), RucronError> {
+            fn call(self, args:&ArgStorage, name: String) {
+                let start = Local::now();
                 $(
                     let $ty = match $ty::parse_args(args) {
                         Ok(value) => value,
                         Err(e) => {
-                            return Err(RucronError::ParseArgsError(e.to_string()))
+                            handle_result(Err(Box::new(e)), &name, start);
+                            return;
                         },
                     };
                 )*
-                let start = Local::now();
                 rayon::spawn(move ||{
-                    self($($ty,)*).map_err(|e|RucronError::RunTimeError(e.to_string()))
-                    .map_or_else(
-                        |e| {
-                            log::error!("{}", e);
-                            METRIC_STORAGE.get(&name).map_or_else(
-                                || unreachable!("unreachable"),
-                                |m| m.add_failure(NumberType::Error),
-                            );
-                        },
-                        |_| {
-                            METRIC_STORAGE.get(&name).map_or_else(
-                                || unreachable!("unreachable"),
-                                |m| {
-                                    m.swap_time_and_add_runs(
-                                        Local::now().signed_duration_since(start).num_seconds() as usize,
-                                    )
-                                },
-                            );
-                        },
-                    );
+                    handle_result(self($($ty,)*), &name, start);
                 });
-                Ok(())
             }
         }
     };
@@ -316,20 +253,20 @@ where
                             unlock_and_record(locker, &name[..], args);
                         }
                         Ok(b) if !b => {
-                            METRIC_STORAGE.get(&self.name()).map_or_else(
-                                || unreachable!("unreachable"),
-                                |m| m.add_failure(NumberType::Lock),
-                            );
+                            METRIC_STORAGE
+                                .get(&self.name())
+                                .unwrap()
+                                .add_failure(MetricType::Lock);
                         }
                         Ok(_) => {
                             unreachable!("unreachable!")
                         }
                         Err(e) => {
                             log::error!("{}", e);
-                            METRIC_STORAGE.get(&self.name()).map_or_else(
-                                || unreachable!("unreachable"),
-                                |m| m.add_failure(NumberType::Error),
-                            );
+                            METRIC_STORAGE
+                                .get(&self.name())
+                                .unwrap()
+                                .add_failure(MetricType::Error);
                         }
                     },
                     _ => {}
@@ -347,14 +284,13 @@ where
                     log::debug!("[DEBUG] Had finished running: {}", name_copy);
                 }
             };
-            return;
         } else {
             JobHandler::call(self.fallback, args, name).await;
         }
     }
     #[inline(always)]
     fn name(&self) -> String {
-        return self.name.clone();
+        self.name.clone()
     }
 }
 
@@ -463,7 +399,7 @@ where
 {
     async fn call(self, args: Arc<ArgStorage>, name: String) {
         let exe = self.executor.clone();
-        Executor::call(exe, &*args, name).await.unwrap();
+        Executor::call(exe, &*args, name).await;
     }
 
     #[inline(always)]
@@ -480,7 +416,7 @@ where
 {
     async fn call(self, args: Arc<ArgStorage>, name: String) {
         let exe = self.executor.clone();
-        SyncExecutor::call(exe, &*args, name).unwrap();
+        SyncExecutor::call(exe, &*args, name);
     }
 
     #[inline(always)]

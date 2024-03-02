@@ -491,6 +491,14 @@ mod tokio_test {
     }
 
     #[tokio::test]
+    #[should_panic]
+    async fn test_without_job_name() {
+        let sch = Scheduler::<EmptyTask, ()>::new(1, 10);
+        let sch = sch.every(2).second();
+        sch.start().await;
+    }
+
+    #[tokio::test]
     async fn test_job_with_arguments() {
         let child = Person { age: 8 };
         let mut arg = ArgStorage::new();
