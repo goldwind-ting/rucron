@@ -201,7 +201,7 @@ pub(crate) struct Person {
 impl ParseArgs for Person {
     type Err = std::io::Error;
     fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err> {
-        return Ok(args.get::<Person>().unwrap().clone());
+        Ok(args.get::<Person>().unwrap().clone())
     }
 }
 

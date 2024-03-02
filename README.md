@@ -155,7 +155,7 @@ struct Person {
 impl ParseArgs for Person {
     type Err = std::io::Error;
     fn parse_args(args: &ArgStorage) -> Result<Self, Self::Err> {
-        return Ok(args.get::<Person>().unwrap().clone());
+        Ok(args.get::<Person>().unwrap().clone())
     }
 }
 
@@ -179,13 +179,6 @@ async fn main() {
 ```
 
 If you want to schedule jobs with distributed locks, please see [examples] directory.
-
-## To Do List
-- [x] Support smol and tokio Ecology.
-- [ ] Enable change timezone.
-- [x] Support synchronous job.
-- [ ] Improve readability of annotation.
-- [ ] Add benchmark.
 
 ## License
 Rucron is licensed under the [MIT license](https://opensource.org/licenses/MIT).

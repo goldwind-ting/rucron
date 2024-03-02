@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-pub(crate) enum NumberType {
+pub(crate) enum MetricType {
     Error,
     Unlock,
     Lock,
@@ -66,11 +66,11 @@ impl Metric {
     }
 
     /// Update `n_error`, `n_failure_of_unlock`, `n_failure_of_lock`.
-    pub(crate) fn add_failure(&self, number_type: NumberType) {
-        match number_type {
-            NumberType::Error => self.n_error.fetch_add(1, Ordering::SeqCst),
-            NumberType::Unlock => self.n_failure_of_unlock.fetch_add(1, Ordering::SeqCst),
-            NumberType::Lock => self.n_failure_of_lock.fetch_add(1, Ordering::SeqCst),
+    pub(crate) fn add_failure(&self, metric_type: MetricType) {
+        match metric_type {
+            MetricType::Error => self.n_error.fetch_add(1, Ordering::SeqCst),
+            MetricType::Unlock => self.n_failure_of_unlock.fetch_add(1, Ordering::SeqCst),
+            MetricType::Lock => self.n_failure_of_lock.fetch_add(1, Ordering::SeqCst),
         };
     }
 }

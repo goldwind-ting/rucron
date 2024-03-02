@@ -192,7 +192,7 @@ pub use crate::locker::Locker;
 pub use crate::metric::Metric;
 pub use crate::scheduler::{EmptyTask, Scheduler};
 
-use crate::metric::NumberType;
+use crate::metric::MetricType;
 use dashmap::DashMap;
 use serde_json;
 use std::sync::Arc;
@@ -211,17 +211,17 @@ pub fn get_metric_with_name(name: &str) -> Result<String, RucronError> {
 
 pub(crate) fn unlock_and_record<L: Locker>(locker: L, key: &str, args: Arc<ArgStorage>) {
     match locker.unlock(key, args.clone()) {
-        Ok(b) if !b => METRIC_STORAGE.get(key).map_or_else(
-            || unreachable!("unreachable"),
-            |m| m.add_failure(NumberType::Unlock),
-        ),
+        Ok(b) if !b => METRIC_STORAGE
+            .get(key)
+            .unwrap()
+            .add_failure(MetricType::Unlock),
         Ok(_) => {}
         Err(e) => {
             log::error!("{}", e);
-            METRIC_STORAGE.get(key).map_or_else(
-                || unreachable!("unreachable"),
-                |m| m.add_failure(NumberType::Error),
-            )
+            METRIC_STORAGE
+                .get(key)
+                .unwrap()
+                .add_failure(MetricType::Error);
         }
     };
 }
